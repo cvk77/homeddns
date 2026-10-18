@@ -55,6 +55,9 @@ description = "Build and push container image with Ko (single platform)"
 depends = ["test"]
 run = """
 VERSION=$(tr -d '\n' < VERSION)
+export VERSION
+export BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+export GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 ko build . --bare --sbom=none --tags="${VERSION},latest"
 """
 
