@@ -39,10 +39,15 @@ func RunUpdate(hostname, recordType string, config *Config) error {
 		TTL:   config.DefaultTTL,
 	}
 
-	if err := p.UpdateRecord(context.Background(), config.Domain, record); err != nil {
+	changed, err := p.UpdateRecord(context.Background(), config.Domain, record)
+	if err != nil {
 		return fmt.Errorf("failed to update DNS record: %w", err)
 	}
 
+	if !changed {
+		logger.Info("%s record for %s already points to %s, no update needed", recordType, hostname, publicIP)
+		return nil
+	}
 	logger.Info("Successfully updated %s record for %s to %s", recordType, hostname, publicIP)
 	return nil
 }

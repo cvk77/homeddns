@@ -512,11 +512,11 @@ func (c *NetcupClient) GetRecord(ctx context.Context, domain, hostname, recordTy
 		}
 	}
 
-	return nil, fmt.Errorf("record not found")
+	return nil, ErrRecordNotFound
 }
 
 // UpdateRecord updates or creates a DNS record
-func (c *NetcupClient) UpdateRecord(ctx context.Context, domain string, record *DNSRecord) error {
+func (c *NetcupClient) UpdateRecord(ctx context.Context, domain string, record *DNSRecord) (bool, error) {
 	logger.Debug("Netcup: Updating record for domain=%s, name=%s, type=%s, value=%s", domain, record.Name, record.Type, record.Value)
 
 	// Extract subdomain from hostname
@@ -525,7 +525,7 @@ func (c *NetcupClient) UpdateRecord(ctx context.Context, domain string, record *
 	// Get all existing records
 	records, err := c.InfoDNSRecords(ctx, domain)
 	if err != nil {
-		return fmt.Errorf("get DNS records: %w", err)
+		return false, fmt.Errorf("get DNS records: %w", err)
 	}
 
 	// Find existing record
@@ -543,7 +543,7 @@ func (c *NetcupClient) UpdateRecord(ctx context.Context, domain string, record *
 	if existingRecord != nil && existingRecord.Destination == record.Value {
 		logger.Debug("Netcup: Record already up to date")
 		// Already up to date
-		return nil
+		return false, nil
 	}
 
 	// Prepare record for update
@@ -561,11 +561,11 @@ func (c *NetcupClient) UpdateRecord(ctx context.Context, domain string, record *
 
 	// Update the record
 	if err := c.UpdateDNSRecords(ctx, domain, updatedRecords); err != nil {
-		return fmt.Errorf("update DNS record: %w", err)
+		return false, fmt.Errorf("update DNS record: %w", err)
 	}
 
 	logger.Info("Netcup: Successfully updated record %s to %s", record.Name, record.Value)
-	return nil
+	return true, nil
 }
 
 // Close logs out and cleans up resources

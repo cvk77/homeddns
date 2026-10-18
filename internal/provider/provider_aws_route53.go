@@ -98,12 +98,12 @@ func (c *AwsRoute53Client) GetRecord(ctx context.Context, domain, hostname, reco
 
 	// Check if we found the record
 	if len(result.ResourceRecordSets) == 0 {
-		return nil, fmt.Errorf("record not found")
+		return nil, ErrRecordNotFound
 	}
 
 	recordSet := result.ResourceRecordSets[0]
 	if aws.ToString(recordSet.Name) != fqdn || string(recordSet.Type) != recordType {
-		return nil, fmt.Errorf("record not found")
+		return nil, ErrRecordNotFound
 	}
 
 	// Extract value
@@ -121,13 +121,13 @@ func (c *AwsRoute53Client) GetRecord(ctx context.Context, domain, hostname, reco
 }
 
 // UpdateRecord updates or creates a DNS record
-func (c *AwsRoute53Client) UpdateRecord(ctx context.Context, domain string, record *DNSRecord) error {
+func (c *AwsRoute53Client) UpdateRecord(ctx context.Context, domain string, record *DNSRecord) (bool, error) {
 	logger.Debug("AWS Route53: Updating record for domain=%s, name=%s, type=%s, value=%s", domain, record.Name, record.Type, record.Value)
 
 	// Get hosted zone ID
 	zoneID, err := c.getHostedZoneID(ctx, domain)
 	if err != nil {
-		return fmt.Errorf("get hosted zone: %w", err)
+		return false, fmt.Errorf("get hosted zone: %w", err)
 	}
 
 	// Ensure hostname ends with a dot for Route53
@@ -138,7 +138,7 @@ func (c *AwsRoute53Client) UpdateRecord(ctx context.Context, domain string, reco
 	if err == nil && existing.Value == record.Value {
 		logger.Debug("AWS Route53: Record already up to date")
 		// Record exists and is already up to date
-		return nil
+		return false, nil
 	}
 
 	// Prepare the resource record
@@ -169,11 +169,11 @@ func (c *AwsRoute53Client) UpdateRecord(ctx context.Context, domain string, reco
 
 	_, err = c.client.ChangeResourceRecordSets(ctx, input)
 	if err != nil {
-		return fmt.Errorf("change resource record sets: %w", err)
+		return false, fmt.Errorf("change resource record sets: %w", err)
 	}
 
 	logger.Info("AWS Route53: Successfully updated record %s to %s", record.Name, record.Value)
-	return nil
+	return true, nil
 }
 
 // Close cleans up resources (no-op for Route53)

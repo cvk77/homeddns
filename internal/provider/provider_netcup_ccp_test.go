@@ -129,8 +129,7 @@ func TestNetcupProvider_GetRecord(t *testing.T) {
 
 	// Test case: Record not found
 	_, err = client.GetRecord(context.Background(), "example.com", "notfound.example.com", "A")
-	assert.Error(t, err)
-	assert.Equal(t, "record not found", err.Error())
+	assert.IsError(t, err, ErrRecordNotFound)
 }
 
 func TestNetcupProvider_UpdateRecord(t *testing.T) {
@@ -140,12 +139,13 @@ func TestNetcupProvider_UpdateRecord(t *testing.T) {
 	client := NewNetcupClient("user", "key", "pass").WithEndpoint(mockServer.server.URL)
 
 	// Test case: Update existing record
-	err := client.UpdateRecord(context.Background(), "example.com", &DNSRecord{
+	changed, err := client.UpdateRecord(context.Background(), "example.com", &DNSRecord{
 		Name:  "www.example.com",
 		Type:  "A",
 		Value: "2.2.2.2",
 	})
 	assert.NoError(t, err)
+	assert.True(t, changed)
 
 	// Verify the record was updated
 	record, err := client.GetRecord(context.Background(), "example.com", "www.example.com", "A")
@@ -153,12 +153,13 @@ func TestNetcupProvider_UpdateRecord(t *testing.T) {
 	assert.Equal(t, "2.2.2.2", record.Value)
 
 	// Test case: Create new record
-	err = client.UpdateRecord(context.Background(), "example.com", &DNSRecord{
+	changed, err = client.UpdateRecord(context.Background(), "example.com", &DNSRecord{
 		Name:  "new.example.com",
 		Type:  "A",
 		Value: "3.3.3.3",
 	})
 	assert.NoError(t, err)
+	assert.True(t, changed)
 
 	// Verify the record was created
 	record, err = client.GetRecord(context.Background(), "example.com", "new.example.com", "A")
@@ -170,12 +171,13 @@ func TestNetcupProvider_UpdateRecord(t *testing.T) {
 	initialRequestCount := len(mockServer.requests)
 	mockServer.mu.Unlock()
 
-	err = client.UpdateRecord(context.Background(), "example.com", &DNSRecord{
+	changed, err = client.UpdateRecord(context.Background(), "example.com", &DNSRecord{
 		Name:  "new.example.com",
 		Type:  "A",
 		Value: "3.3.3.3",
 	})
 	assert.NoError(t, err)
+	assert.False(t, changed)
 
 	// Verify no update API call was made
 	mockServer.mu.Lock()

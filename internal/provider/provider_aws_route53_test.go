@@ -152,10 +152,13 @@ func TestAwsRoute53Client_UpdateRecord(t *testing.T) {
 	}
 
 	client := NewAwsRoute53ClientWithMock(mockAPI)
-	err := client.UpdateRecord(context.Background(), domain, record)
+	changed, err := client.UpdateRecord(context.Background(), domain, record)
 
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected record to be reported as changed")
 	}
 	if changeCalls != 1 {
 		t.Fatalf("expected 1 change call, got %d", changeCalls)
@@ -185,4 +188,38 @@ func TestAwsRoute53Client_ConcurrentZoneLookup(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestAwsRoute53Client_UpdateRecordUnchanged(t *testing.T) {
+	mockAPI := &mockRoute53API{
+		ListHostedZonesFunc: func(ctx context.Context, params *route53.ListHostedZonesInput, optFns ...func(*route53.Options)) (*route53.ListHostedZonesOutput, error) {
+			return &route53.ListHostedZonesOutput{HostedZones: []types.HostedZone{{
+				Id:   aws.String("/hostedzone/ZONE123"),
+				Name: aws.String("example.com."),
+			}}}, nil
+		},
+		ListResourceRecordSetsFunc: func(ctx context.Context, params *route53.ListResourceRecordSetsInput, optFns ...func(*route53.Options)) (*route53.ListResourceRecordSetsOutput, error) {
+			return &route53.ListResourceRecordSetsOutput{ResourceRecordSets: []types.ResourceRecordSet{{
+				Name:            aws.String("test.example.com."),
+				Type:            types.RRTypeA,
+				TTL:             aws.Int64(60),
+				ResourceRecords: []types.ResourceRecord{{Value: aws.String("192.0.2.2")}},
+			}}}, nil
+		},
+		ChangeResourceRecordSetsFunc: func(ctx context.Context, params *route53.ChangeResourceRecordSetsInput, optFns ...func(*route53.Options)) (*route53.ChangeResourceRecordSetsOutput, error) {
+			t.Fatalf("unexpected change call for unchanged record")
+			return nil, nil
+		},
+	}
+
+	client := NewAwsRoute53ClientWithMock(mockAPI)
+	changed, err := client.UpdateRecord(context.Background(), "example.com", &DNSRecord{
+		Name: "test.example.com", Type: "A", Value: "192.0.2.2", TTL: 60,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if changed {
+		t.Fatalf("expected record to be reported as unchanged")
+	}
 }

@@ -2,9 +2,13 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 )
+
+// ErrRecordNotFound is returned by GetRecord when no matching record exists.
+var ErrRecordNotFound = errors.New("record not found")
 
 // DNSRecordSet represents a DNS zone's record set
 type DNSRecordSet struct {
@@ -23,8 +27,11 @@ type DNSRecord struct {
 // Provider defines the interface that all DNS providers must implement.
 type Provider interface {
 	Name() string
+	// GetRecord returns ErrRecordNotFound if the record does not exist.
 	GetRecord(ctx context.Context, domain, hostname, recordType string) (*DNSRecord, error)
-	UpdateRecord(ctx context.Context, domain string, record *DNSRecord) error
+	// UpdateRecord creates or updates a record. changed is false if the
+	// record already had the requested value and no update was sent.
+	UpdateRecord(ctx context.Context, domain string, record *DNSRecord) (changed bool, err error)
 	Close(ctx context.Context) error
 }
 

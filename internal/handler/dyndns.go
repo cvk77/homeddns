@@ -85,9 +85,16 @@ func (h *DynDNSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	logger.Debug("Updating DNS: hostname=%s, domain=%s, subdomain=%s, ip=%s", hostname, domain, subdomain, ipAddress)
 
-	if err := h.updateDNS(ctx, domain, subdomain, ipAddress); err != nil {
+	changed, err := h.updateDNS(ctx, domain, subdomain, ipAddress)
+	if err != nil {
 		logger.Error("Error updating DNS for %s: %v", hostname, err)
 		h.respond(w, "911", ipAddress, isStandardFormat)
+		return
+	}
+
+	if !changed {
+		logger.Info("%s already points to %s, no update needed", hostname, ipAddress)
+		h.respond(w, "nochg", ipAddress, isStandardFormat)
 		return
 	}
 
@@ -177,7 +184,7 @@ func (h *DynDNSHandler) extractIP(r *http.Request) string {
 }
 
 // updateDNS updates the DNS record via the configured provider
-func (h *DynDNSHandler) updateDNS(ctx context.Context, domain, subdomain, ipAddress string) error {
+func (h *DynDNSHandler) updateDNS(ctx context.Context, domain, subdomain, ipAddress string) (bool, error) {
 	// Determine record type
 	recordType := "A"
 	if strings.Contains(ipAddress, ":") {
@@ -196,11 +203,12 @@ func (h *DynDNSHandler) updateDNS(ctx context.Context, domain, subdomain, ipAddr
 	}
 
 	// Update the record via provider
-	if err := h.config.Provider.UpdateRecord(ctx, domain, record); err != nil {
-		return fmt.Errorf("update DNS record: %w", err)
+	changed, err := h.config.Provider.UpdateRecord(ctx, domain, record)
+	if err != nil {
+		return false, fmt.Errorf("update DNS record: %w", err)
 	}
 
-	return nil
+	return changed, nil
 }
 
 // buildHostname builds a full hostname from subdomain and domain
