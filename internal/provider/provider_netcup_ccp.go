@@ -568,6 +568,31 @@ func (c *NetcupClient) UpdateRecord(ctx context.Context, domain string, record *
 	return true, nil
 }
 
+// DeleteRecord deletes a DNS record if it still has the given value
+func (c *NetcupClient) DeleteRecord(ctx context.Context, domain string, record *DNSRecord) error {
+	logger.Debug("Netcup: Deleting record for domain=%s, name=%s, type=%s, value=%s", domain, record.Name, record.Type, record.Value)
+
+	subdomain := c.extractSubdomain(record.Name, domain)
+
+	records, err := c.InfoDNSRecords(ctx, domain)
+	if err != nil {
+		return fmt.Errorf("get DNS records: %w", err)
+	}
+
+	for _, r := range records {
+		if r.Hostname == subdomain && r.Type == record.Type && r.Destination == record.Value {
+			r.Delete = true
+			if err := c.UpdateDNSRecords(ctx, domain, []netcupDNSRecord{r}); err != nil {
+				return fmt.Errorf("delete DNS record: %w", err)
+			}
+			logger.Info("Netcup: Deleted record %s %s %s", record.Name, record.Type, record.Value)
+			return nil
+		}
+	}
+
+	return ErrRecordNotFound
+}
+
 // Close logs out and cleans up resources
 func (c *NetcupClient) Close(ctx context.Context) error {
 	return c.Logout(ctx)

@@ -199,6 +199,49 @@ func (c *AwsRoute53Client) UpdateRecord(ctx context.Context, domain string, reco
 	return true, nil
 }
 
+// DeleteRecord deletes a DNS record if it still has the given value
+func (c *AwsRoute53Client) DeleteRecord(ctx context.Context, domain string, record *DNSRecord) error {
+	logger.Debug("AWS Route53: Deleting record for domain=%s, name=%s, type=%s, value=%s", domain, record.Name, record.Type, record.Value)
+
+	zoneID, err := c.getHostedZoneID(ctx, record.Name)
+	if err != nil {
+		return fmt.Errorf("get hosted zone: %w", err)
+	}
+
+	recordSet, err := c.findRecordSet(ctx, zoneID, record.Name, record.Type)
+	if err != nil {
+		return err
+	}
+
+	found := false
+	for _, rr := range recordSet.ResourceRecords {
+		if aws.ToString(rr.Value) == record.Value {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ErrRecordNotFound
+	}
+
+	// Route53 requires the delete to match the existing record set exactly.
+	input := &route53.ChangeResourceRecordSetsInput{
+		HostedZoneId: aws.String(zoneID),
+		ChangeBatch: &types.ChangeBatch{
+			Changes: []types.Change{{
+				Action:            types.ChangeActionDelete,
+				ResourceRecordSet: recordSet,
+			}},
+		},
+	}
+	if _, err := c.client.ChangeResourceRecordSets(ctx, input); err != nil {
+		return fmt.Errorf("change resource record sets: %w", err)
+	}
+
+	logger.Info("AWS Route53: Deleted record %s %s %s", record.Name, record.Type, record.Value)
+	return nil
+}
+
 // Close cleans up resources (no-op for Route53)
 func (c *AwsRoute53Client) Close(ctx context.Context) error {
 	return nil

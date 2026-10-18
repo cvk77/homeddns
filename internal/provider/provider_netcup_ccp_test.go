@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -75,7 +76,7 @@ func newMockNetcupAPIServer() *mockNetcupAPIServer {
 			err := json.Unmarshal(paramBytes, &params)
 			assert.NoError(&testing.T{}, err)
 			mock.mu.Lock()
-			mock.records = params.DNSRecordSet.DNSRecords
+			mock.applyUpdate(params.DNSRecordSet.DNSRecords)
 			mock.mu.Unlock()
 			resp = APIResponse{
 				Status:       "success",
@@ -100,6 +101,28 @@ func newMockNetcupAPIServer() *mockNetcupAPIServer {
 	}))
 
 	return mock
+}
+
+// applyUpdate replaces the record set, or removes the records flagged with
+// deleterecord if the request only contains deletions.
+func (m *mockNetcupAPIServer) applyUpdate(records []netcupDNSRecord) {
+	var deleteIDs []string
+	for _, r := range records {
+		if r.Delete {
+			deleteIDs = append(deleteIDs, r.ID)
+		}
+	}
+	if len(deleteIDs) == 0 {
+		m.records = records
+		return
+	}
+	var kept []netcupDNSRecord
+	for _, r := range m.records {
+		if !slices.Contains(deleteIDs, r.ID) {
+			kept = append(kept, r)
+		}
+	}
+	m.records = kept
 }
 
 func (m *mockNetcupAPIServer) marshalRecords() string {
@@ -244,4 +267,25 @@ func TestNetcupProvider_NewNetcupProvider(t *testing.T) {
 	t.Setenv("NETCUP_API_PASSWORD", "")
 	_, err = NewNetcupProvider(context.Background(), nil)
 	assert.Error(t, err)
+}
+
+func TestNetcupProvider_DeleteRecord(t *testing.T) {
+	mockServer := newMockNetcupAPIServer()
+	defer mockServer.Close()
+
+	client := NewNetcupClient("user", "key", "pass").WithEndpoint(mockServer.server.URL)
+
+	// Value mismatch: nothing is deleted
+	err := client.DeleteRecord(context.Background(), "example.com", &DNSRecord{Name: "www.example.com", Type: "A", Value: "9.9.9.9"})
+	assert.IsError(t, err, ErrRecordNotFound)
+
+	err = client.DeleteRecord(context.Background(), "example.com", &DNSRecord{Name: "www.example.com", Type: "A", Value: "1.1.1.1"})
+	assert.NoError(t, err)
+
+	_, err = client.GetRecord(context.Background(), "example.com", "www.example.com", "A")
+	assert.IsError(t, err, ErrRecordNotFound)
+
+	// Other records are untouched
+	_, err = client.GetRecord(context.Background(), "example.com", "example.com", "A")
+	assert.NoError(t, err)
 }

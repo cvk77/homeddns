@@ -3,25 +3,36 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/markussiebert/homeddns/internal/clientip"
 	"github.com/markussiebert/homeddns/internal/logger"
 	"github.com/markussiebert/homeddns/internal/util"
 )
 
 // Config represents the application configuration
 type Config struct {
-	Port       int
-	Username   string
-	Password   string
-	Provider   string
-	Domain     string
-	DefaultTTL int
-	SSL        bool
-	CertFile   string
-	KeyFile    string
+	Port                int
+	Username            string
+	Password            string
+	Provider            string
+	Domain              string
+	DefaultTTL          int
+	SSL                 bool
+	CertFile            string
+	KeyFile             string
+	TrustedProxies      []netip.Prefix
+	AllowPrivateIPs     bool
+	CleanupStaleRecords bool
+}
+
+// envBool reports whether an environment variable is set to "true" or "1".
+func envBool(key string) bool {
+	value := strings.ToLower(os.Getenv(key))
+	return value == "true" || value == "1"
 }
 
 func LoadHomeAssistantConfig() error {
@@ -196,6 +207,19 @@ func LoadConfig() (*Config, error) {
 	} else {
 		config.KeyFile = "/ssl/privkey.pem" // Home Assistant default
 	}
+
+	// IP handling
+	if proxies := os.Getenv("TRUSTED_PROXIES"); proxies != "" {
+		prefixes, err := clientip.ParsePrefixes(proxies)
+		if err != nil {
+			return nil, logger.Errorf("invalid TRUSTED_PROXIES: %w", err)
+		}
+		config.TrustedProxies = prefixes
+		logger.Debug("Trusted proxies: %v", prefixes)
+	}
+	config.AllowPrivateIPs = envBool("ALLOW_PRIVATE_IPS")
+	config.CleanupStaleRecords = envBool("CLEANUP_STALE_RECORD")
+	logger.Debug("IP config: allow_private_ips=%v, cleanup_stale_record=%v", config.AllowPrivateIPs, config.CleanupStaleRecords)
 
 	logger.Debug("SSL config: enabled=%v, certfile=%s, keyfile=%s", config.SSL, config.CertFile, config.KeyFile)
 

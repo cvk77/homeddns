@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -317,5 +318,45 @@ func TestAwsRoute53Client_WildcardUnchanged(t *testing.T) {
 	}
 	if changed {
 		t.Fatalf("expected wildcard record to be reported as unchanged")
+	}
+}
+
+func TestAwsRoute53Client_DeleteRecord(t *testing.T) {
+	existing := types.ResourceRecordSet{
+		Name:            aws.String("home.example.com."),
+		Type:            types.RRTypeA,
+		TTL:             aws.Int64(300),
+		ResourceRecords: []types.ResourceRecord{{Value: aws.String("192.0.2.1")}},
+	}
+	mockAPI := zonesMock(zone("ZONE123", "example.com.", false))
+	mockAPI.ListResourceRecordSetsFunc = func(ctx context.Context, params *route53.ListResourceRecordSetsInput, optFns ...func(*route53.Options)) (*route53.ListResourceRecordSetsOutput, error) {
+		return &route53.ListResourceRecordSetsOutput{ResourceRecordSets: []types.ResourceRecordSet{existing}}, nil
+	}
+	var deleted *types.ResourceRecordSet
+	mockAPI.ChangeResourceRecordSetsFunc = func(ctx context.Context, params *route53.ChangeResourceRecordSetsInput, optFns ...func(*route53.Options)) (*route53.ChangeResourceRecordSetsOutput, error) {
+		change := params.ChangeBatch.Changes[0]
+		if change.Action != types.ChangeActionDelete {
+			t.Fatalf("unexpected action: %s", change.Action)
+		}
+		deleted = change.ResourceRecordSet
+		return &route53.ChangeResourceRecordSetsOutput{}, nil
+	}
+	client := NewAwsRoute53ClientWithMock(mockAPI)
+
+	// Value mismatch: nothing is deleted
+	err := client.DeleteRecord(context.Background(), "", &DNSRecord{Name: "home.example.com", Type: "A", Value: "192.0.2.9"})
+	if !errors.Is(err, ErrRecordNotFound) {
+		t.Fatalf("expected ErrRecordNotFound, got %v", err)
+	}
+	if deleted != nil {
+		t.Fatalf("unexpected delete")
+	}
+
+	err = client.DeleteRecord(context.Background(), "", &DNSRecord{Name: "home.example.com", Type: "A", Value: "192.0.2.1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted == nil || aws.ToInt64(deleted.TTL) != 300 || aws.ToString(deleted.Name) != "home.example.com." {
+		t.Fatalf("delete must match the existing record set exactly, got %+v", deleted)
 	}
 }

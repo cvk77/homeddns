@@ -2,13 +2,15 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/markussiebert/homeddns/internal/clientip"
 	"github.com/markussiebert/homeddns/internal/logger"
 	"github.com/markussiebert/homeddns/internal/provider"
 )
@@ -17,6 +19,13 @@ import (
 type Config struct {
 	Provider   provider.Provider
 	DefaultTTL int
+	// ClientIP determines the client address when no myip/myipv6 is given.
+	ClientIP clientip.Resolver
+	// AllowPrivateIPs disables the rejection of non-public addresses.
+	AllowPrivateIPs bool
+	// CleanupStaleRecords removes the record of the other address family
+	// (A when setting AAAA and vice versa) if only one family is updated.
+	CleanupStaleRecords bool
 }
 
 // DynDNSHandler handles DynDNS update requests
@@ -70,36 +79,49 @@ func (h *DynDNSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	logger.Debug("Split hostname: domain=%s, subdomain=%s", domain, subdomain)
 
-	// Get IP address
-	ipAddress := h.extractIP(r)
-	if ipAddress == "" {
-		logger.Warn("Failed to extract valid IP address from request")
+	// Get IP addresses
+	addresses, err := h.extractIPs(r)
+	if err != nil {
+		logger.Warn("Rejecting update for %s from %s: %v", hostname, r.RemoteAddr, err)
 		h.respond(w, "911", "", isStandardFormat)
 		return
 	}
-	logger.Debug("Extracted IP address: %s", ipAddress)
+	logger.Debug("Extracted IP addresses: %v", addresses)
 
-	// Update DNS record
+	// Update DNS records
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	logger.Debug("Updating DNS: hostname=%s, domain=%s, subdomain=%s, ip=%s", hostname, domain, subdomain, ipAddress)
+	anyChanged := false
+	ipStrings := make([]string, 0, len(addresses))
+	for _, addr := range addresses {
+		ipStrings = append(ipStrings, addr.String())
+	}
+	ipList := strings.Join(ipStrings, ",")
 
-	changed, err := h.updateDNS(ctx, domain, subdomain, ipAddress)
-	if err != nil {
-		logger.Error("Error updating DNS for %s: %v", hostname, err)
-		h.respond(w, "911", ipAddress, isStandardFormat)
+	for _, addr := range addresses {
+		logger.Debug("Updating DNS: hostname=%s, domain=%s, subdomain=%s, ip=%s", hostname, domain, subdomain, addr)
+		changed, err := h.updateDNS(ctx, domain, subdomain, addr)
+		if err != nil {
+			logger.Error("Error updating DNS for %s: %v", hostname, err)
+			h.respond(w, "911", ipList, isStandardFormat)
+			return
+		}
+		anyChanged = anyChanged || changed
+	}
+
+	if h.config.CleanupStaleRecords && len(addresses) == 1 {
+		h.cleanupStaleRecord(ctx, domain, h.buildHostname(subdomain, domain), recordType(addresses[0]))
+	}
+
+	if !anyChanged {
+		logger.Info("%s already points to %s, no update needed", hostname, ipList)
+		h.respond(w, "nochg", ipList, isStandardFormat)
 		return
 	}
 
-	if !changed {
-		logger.Info("%s already points to %s, no update needed", hostname, ipAddress)
-		h.respond(w, "nochg", ipAddress, isStandardFormat)
-		return
-	}
-
-	logger.Info("Successfully updated %s to %s", hostname, ipAddress)
-	h.respond(w, "good", ipAddress, isStandardFormat)
+	logger.Info("Successfully updated %s to %s", hostname, ipList)
+	h.respond(w, "good", ipList, isStandardFormat)
 }
 
 // extractHostname extracts the hostname from the request
@@ -153,52 +175,78 @@ func (h *DynDNSHandler) splitHostname(hostname string) (domain, subdomain string
 	return domain, subdomain
 }
 
-// extractIP extracts the IP address from the request
-func (h *DynDNSHandler) extractIP(r *http.Request) string {
-	// Check query parameter first
-	if ip := r.URL.Query().Get("myip"); ip != "" {
-		if net.ParseIP(ip) != nil {
-			return ip
+// extractIPs returns the addresses to set, at most one per address family.
+// Sources in order of precedence: myip/myipv6 query parameters, then the
+// client address (X-Forwarded-For from trusted proxies, else RemoteAddr).
+func (h *DynDNSHandler) extractIPs(r *http.Request) ([]netip.Addr, error) {
+	query := r.URL.Query()
+	var ipv4, ipv6 netip.Addr
+
+	for _, param := range []string{"myip", "myipv6"} {
+		value := query.Get(param)
+		if value == "" {
+			continue
+		}
+		addr, err := clientip.ParseAddr(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", param, err)
+		}
+		if param == "myipv6" && addr.Is4() {
+			return nil, fmt.Errorf("myipv6: %s is not an IPv6 address", addr)
+		}
+		target := &ipv6
+		if addr.Is4() {
+			target = &ipv4
+		}
+		if target.IsValid() {
+			return nil, fmt.Errorf("%s: more than one address of the same family", param)
+		}
+		*target = addr
+	}
+
+	if !ipv4.IsValid() && !ipv6.IsValid() {
+		addr, err := h.config.ClientIP.FromRequest(r)
+		if err != nil {
+			return nil, fmt.Errorf("determine client address: %w", err)
+		}
+		if addr.Is4() {
+			ipv4 = addr
+		} else {
+			ipv6 = addr
 		}
 	}
 
-	// Fall back to request source IP
-	ip := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(ip); err == nil {
-		ip = host
-	}
-
-	// Handle X-Forwarded-For header
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		ips := strings.Split(forwarded, ",")
-		if len(ips) > 0 {
-			ip = strings.TrimSpace(ips[0])
+	var addresses []netip.Addr
+	for _, addr := range []netip.Addr{ipv4, ipv6} {
+		if !addr.IsValid() {
+			continue
 		}
+		if !h.config.AllowPrivateIPs && !clientip.IsPublic(addr) {
+			return nil, fmt.Errorf("%s is not a public address (set ALLOW_PRIVATE_IPS=true to allow)", addr)
+		}
+		addresses = append(addresses, addr)
 	}
+	return addresses, nil
+}
 
-	if net.ParseIP(ip) != nil {
-		return ip
+// recordType returns the DNS record type for an address.
+func recordType(addr netip.Addr) string {
+	if addr.Is4() {
+		return "A"
 	}
-
-	return ""
+	return "AAAA"
 }
 
 // updateDNS updates the DNS record via the configured provider
-func (h *DynDNSHandler) updateDNS(ctx context.Context, domain, subdomain, ipAddress string) (bool, error) {
-	// Determine record type
-	recordType := "A"
-	if strings.Contains(ipAddress, ":") {
-		recordType = "AAAA"
-	}
-
+func (h *DynDNSHandler) updateDNS(ctx context.Context, domain, subdomain string, addr netip.Addr) (bool, error) {
 	// Build full hostname
 	hostname := h.buildHostname(subdomain, domain)
 
 	// Prepare DNS record
 	record := &provider.DNSRecord{
 		Name:  hostname,
-		Type:  recordType,
-		Value: ipAddress,
+		Type:  recordType(addr),
+		Value: addr.String(),
 		TTL:   h.config.DefaultTTL,
 	}
 
@@ -209,6 +257,31 @@ func (h *DynDNSHandler) updateDNS(ctx context.Context, domain, subdomain, ipAddr
 	}
 
 	return changed, nil
+}
+
+// cleanupStaleRecord deletes the record of the other address family for
+// hostname, e.g. an outdated A record after switching to IPv6-only updates.
+// Failures are logged and do not fail the update.
+func (h *DynDNSHandler) cleanupStaleRecord(ctx context.Context, domain, hostname, keepType string) {
+	staleType := "AAAA"
+	if keepType == "AAAA" {
+		staleType = "A"
+	}
+
+	existing, err := h.config.Provider.GetRecord(ctx, domain, hostname, staleType)
+	if errors.Is(err, provider.ErrRecordNotFound) {
+		return
+	}
+	if err != nil {
+		logger.Warn("Could not check for stale %s record of %s: %v", staleType, hostname, err)
+		return
+	}
+
+	if err := h.config.Provider.DeleteRecord(ctx, domain, existing); err != nil {
+		logger.Warn("Could not delete stale %s record of %s: %v", staleType, hostname, err)
+		return
+	}
+	logger.Info("Deleted stale %s record of %s (was %s)", staleType, hostname, existing.Value)
 }
 
 // buildHostname builds a full hostname from subdomain and domain

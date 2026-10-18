@@ -32,6 +32,9 @@ type Provider interface {
 	// UpdateRecord creates or updates a record. changed is false if the
 	// record already had the requested value and no update was sent.
 	UpdateRecord(ctx context.Context, domain string, record *DNSRecord) (changed bool, err error)
+	// DeleteRecord deletes the record with the given name and type if it
+	// still has the given value.
+	DeleteRecord(ctx context.Context, domain string, record *DNSRecord) error
 	Close(ctx context.Context) error
 }
 

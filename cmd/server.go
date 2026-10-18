@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/markussiebert/homeddns/internal/auth"
+	"github.com/markussiebert/homeddns/internal/clientip"
 	"github.com/markussiebert/homeddns/internal/handler"
 	"github.com/markussiebert/homeddns/internal/logger"
 	"github.com/markussiebert/homeddns/internal/provider"
@@ -29,9 +30,14 @@ func RunServer(port int, config *Config) error {
 
 	logger.Info("Using DNS provider: %s", p.Name())
 
+	clientIPResolver := clientip.Resolver{TrustedProxies: config.TrustedProxies}
+
 	dyndnsHandler := handler.NewDynDNSHandler(handler.Config{
-		Provider:   p,
-		DefaultTTL: config.DefaultTTL,
+		Provider:            p,
+		DefaultTTL:          config.DefaultTTL,
+		ClientIP:            clientIPResolver,
+		AllowPrivateIPs:     config.AllowPrivateIPs,
+		CleanupStaleRecords: config.CleanupStaleRecords,
 	})
 
 	authMiddleware := auth.Middleware(auth.Config{
