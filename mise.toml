@@ -92,7 +92,7 @@ description = "Tidy go modules"
 run = "go mod tidy"
 
 [tasks.run]
-description = "Run homeddns server (set env vars: AUTH_USERNAME, AUTH_PASSWORD_HASH, etc.)"
+description = "Run homeddns server (set env vars: AUTH_USERNAME, AUTH_PASSWORD, etc.)"
 run = "go run main.go server"
 
 [tasks."run:dev"]

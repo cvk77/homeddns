@@ -2,15 +2,15 @@ configuration:
   auth_username:
     name: "Username"
     description: "Username for Basic Authentication (used by DynDNS clients)"
-  auth_password_hash:
-    name: "Password Hash"
-    description: "Bcrypt hash of your password. Generate with: docker run --rm -i ghcr.io/markussiebert/homeddns:latest hash-password"
+  auth_password:
+    name: "Password"
+    description: "Password for Basic Authentication (stored and compared as plain text)"
   dns_provider:
     name: "DNS Provider"
-    description: "Choose your DNS hosting provider"
+    description: "Choose your DNS hosting provider (netcup_ccp or aws_route53; route53 is accepted as an alias)"
   domain:
     name: "Domain"
-    description: "Your domain name (e.g., example.com)"
+    description: "Optional. Zone used for hostnames within it (e.g., example.com or example.co.uk); otherwise the last two labels are used (Netcup) or the zone is discovered automatically (Route53)"
   dns_ttl:
     name: "DNS TTL"
     description: "DNS record Time-To-Live in seconds (lower = faster updates, higher = less DNS queries)"

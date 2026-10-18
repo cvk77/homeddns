@@ -46,8 +46,8 @@ options:
 schema:
   auth_username: str
   auth_password: password
-  dns_provider: list(netcup_ccp|route53)
-  domain: str
+  dns_provider: list(netcup_ccp|aws_route53|route53)
+  domain: str?
   dns_ttl: int(30,86400)
   port: int(1024,65535)
   log_level: list(debug|info|warn|error)?

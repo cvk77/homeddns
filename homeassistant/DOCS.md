@@ -76,9 +76,8 @@ Example configuration for AWS Route53:
 
 ```yaml
 auth_username: "dyndns"
-auth_password: "$2a$10$VpADQ4ns1gr1LbHZr/2/f.LdrKT8chhHUJVoMyjOv1A3Y5msQQJVi"
-dns_provider: "route53"
-domain: "example.com"
+auth_password: "your-secure-password"
+dns_provider: "aws_route53"
 dns_ttl: 60
 aws_access_key_id: "AKIAIOSFODNN7EXAMPLE"
 aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -97,7 +96,9 @@ Most modern routers support DynDNS. Here's how to set it up:
 
 **UniFi Devices:**
 - Service: `custom`
-- Server: `homeassistant.local:8053/%h`
+- Server: `homeassistant.local:8053/nic/update?hostname=%h&myip=%i`
+
+**Note:** When the router talks to Home Assistant over the LAN, its source address is private and is rejected with `911`. The router therefore has to send the public address via `myip` (or `myipv6`).
 
 **Fritz!Box:**
 - Update-URL: `http://homeassistant.local:8053/nic/update?hostname=<domain>&myip=<ipaddr>`
@@ -136,6 +137,7 @@ If you're using Nginx Proxy Manager or another reverse proxy:
 ### Common Issues
 
 **"911" Error Response**
+- The IP address is not public (private, CGNAT, link-local, ...). Send the public address via `myip`/`myipv6`
 - Check your DNS provider credentials
 - Verify the domain exists in your DNS provider account
 - Check the add-on logs for detailed error messages

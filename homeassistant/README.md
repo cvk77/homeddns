@@ -49,7 +49,7 @@ When Home Assistant launches the add-on (or you run the Docker image without CLI
 
 ```yaml
 auth_username: "dyndns"
-auth_password: "$2a$10$..." # Paste the hash you generated above
+auth_password: "your-secure-password" # plain text, not a hash
 dns_provider: "netcup_ccp"
 domain: "example.com"
 dns_ttl: 60
@@ -80,7 +80,7 @@ netcup_api_password: "your-api-password"
 For AWS Route53:
 
 ```yaml
-dns_provider: "route53"
+dns_provider: "aws_route53"
 aws_access_key_id: "AKIAIOSFODNN7EXAMPLE"
 aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 aws_region: "us-east-1"
@@ -97,8 +97,8 @@ aws_region: "us-east-1"
 |--------|----------|---------|-------------|
 | `auth_username` | Yes | `dyndns` | Username for Basic Authentication |
 | `auth_password` | Yes | - | Your password for Basic Authentication |
-| `dns_provider` | Yes | `netcup_ccp` | DNS provider (`netcup_ccp` or `route53`) |
-| `domain` | Yes | - | Your domain name (e.g., `example.com`) |
+| `dns_provider` | Yes | `netcup_ccp` | DNS provider (`netcup_ccp` or `aws_route53`; `route53` is accepted as an alias) |
+| `domain` | No | - | Zone for hostnames within it (e.g., `example.co.uk`). Without it, Netcup uses the last two labels and Route53 discovers the zone |
 | `dns_ttl` | No | `60` | DNS record TTL in seconds (30-86400) |
 | `port` | No | `8053` | HTTP server port |
 | `netcup_customer_number` | For Netcup | - | Your Netcup customer number |
@@ -106,7 +106,7 @@ aws_region: "us-east-1"
 | `netcup_api_password` | For Netcup | - | Netcup API password |
 | `aws_access_key_id` | For Route53 | - | AWS access key ID |
 | `aws_secret_access_key` | For Route53 | - | AWS secret access key |
-| `aws_region` | For Route53 | `us-east-1` | AWS region |
+| `aws_region` | For Route53 | - | AWS region for the SDK (Route53 itself is global, e.g. `us-east-1`) |
 
 ## Usage
 
@@ -124,6 +124,8 @@ If you prefer direct access, configure your DynDNS client to use:
 
 **Authentication:** Basic Auth with your configured username/password
 
+**Note:** If your router reaches Home Assistant over the local network, the request source is a private LAN address, which HomeDDNS rejects with `911`. In that case the router must send the public address via `myip` (or `myipv6`).
+
 ### Router Configuration Examples
 
 #### UniFi Dream Machine
@@ -134,7 +136,8 @@ If you prefer direct access, configure your DynDNS client to use:
    - Hostname: `home.example.com`
    - Username: `dyndns`
    - Password: Your configured password
-   - Server: `homeassistant.local:8053/%h`
+   - Server: `homeassistant.local:8053/nic/update?hostname=%h&myip=%i`
+   - Use this only if `%i` is a public address. Behind CGNAT it is a `100.64.0.0/10` address and is rejected; see the IPv6 / CGNAT section of the main README.
 
 #### Fritz!Box
 
