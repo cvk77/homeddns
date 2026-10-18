@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: homeddns
+  labels:
+    app: homeddns
+spec:
+  type: ClusterIP
+  # Set to RequireDualStack/PreferDualStack on dual-stack clusters so the
+  # service is reachable via IPv6 (needed for IPv6-only DynDNS clients).
+  ipFamilyPolicy: SingleStack
+  selector:
+    app: homeddns
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

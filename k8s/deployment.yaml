@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homeddns
+  labels:
+    app: homeddns
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: homeddns
+  template:
+    metadata:
+      labels:
+        app: homeddns
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+      containers:
+        - name: homeddns
+          # Upstream image. Build your own from this repository with
+          # `mise run build:ko-push` (set KO_DOCKER_REPO) to get local changes.
+          image: ghcr.io/markussiebert/homeddns:latest
+          args: ["server"]
+          ports:
+            - name: http
+              containerPort: 8053
+          env:
+            - name: AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: homeddns-secret
+                  key: auth-username
+            - name: AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: homeddns-secret
+                  key: auth-password
+            - name: DNS_TTL
+              value: "60"
+            # Restrict which hostnames clients may update
+            - name: ALLOWED_HOSTNAMES
+              value: home.example.com
+            # The Ingress controller is the direct peer; trust its
+            # X-Forwarded-For header. Adjust to your pod network CIDRs.
+            - name: TRUSTED_PROXIES
+              value: 10.0.0.0/8,fd00::/8
+            - name: DNS_PROVIDER
+              value: netcup_ccp
+            - name: DOMAIN
+              value: example.com
+            - name: NETCUP_CUSTOMER_NUMBER
+              valueFrom:
+                secretKeyRef:
+                  name: homeddns-secret
+                  key: netcup-customer-number
+            - name: NETCUP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: homeddns-secret
+                  key: netcup-api-key
+            - name: NETCUP_API_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: homeddns-secret
+                  key: netcup-api-password
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

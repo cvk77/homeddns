@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homeddns
+  labels:
+    app: homeddns
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: homeddns
+  template:
+    metadata:
+      labels:
+        app: homeddns
+    spec:
+      # IRSA (EKS): the ServiceAccount below carries the IAM role.
+      # Remove this line when using static credentials.
+      serviceAccountName: homeddns-route53
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+      containers:
+        - name: homeddns
+          # Upstream image. Build your own from this repository with
+          # `mise run build:ko-push` (set KO_DOCKER_REPO) to get local changes.
+          image: ghcr.io/markussiebert/homeddns:latest
+          args: ["server"]
+          ports:
+            - name: http
+              containerPort: 8053
+          env:
+            - name: AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: homeddns-secret
+                  key: auth-username
+            - name: AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: homeddns-secret
+                  key: auth-password
+            - name: DNS_TTL
+              value: "60"
+            # Restrict which hostnames clients may update
+            - name: ALLOWED_HOSTNAMES
+              value: home.example.com
+            # The Ingress controller is the direct peer; trust its
+            # X-Forwarded-For header. Adjust to your pod network CIDRs.
+            - name: TRUSTED_PROXIES
+              value: 10.0.0.0/8,fd00::/8
+            - name: DNS_PROVIDER
+              value: aws_route53
+            - name: AWS_REGION
+              value: us-east-1
+            # Optional: skip zone discovery (allows the minimal IAM policy)
+            # - name: ROUTE53_ZONE_ID
+            #   value: Z0123456789ABCDEFGHIJ
+            # Static credentials instead of IRSA:
+            # - name: AWS_ACCESS_KEY_ID
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: homeddns-secret
+            #       key: aws-access-key-id
+            # - name: AWS_SECRET_ACCESS_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: homeddns-secret
+            #       key: aws-secret-access-key
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+# IRSA (EKS): annotate with an IAM role that has the Route53 policy from
+# the README. Delete this ServiceAccount when using static credentials.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: homeddns-route53
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/homeddns-route53
