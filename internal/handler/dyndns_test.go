@@ -209,3 +209,72 @@ func TestServeHTTP_CleanupSkippedForDualUpdate(t *testing.T) {
 		t.Fatalf("expected both records, got %v", fake.records)
 	}
 }
+
+func TestServeHTTP_AllowedHostnames(t *testing.T) {
+	allowed := []string{"home.example.com", "*.dyn.example.com"}
+	testCases := []struct {
+		hostname string
+		allowed  bool
+	}{
+		{"home.example.com", true},
+		{"HOME.example.com", true},
+		{"a.dyn.example.com", true},
+		{"a.b.dyn.example.com", true},
+		{"*.dyn.example.com", true},
+		{"dyn.example.com", false},
+		{"evil-dyn.example.com", false},
+		{"other.example.com", false},
+		{"home.example.com.evil.org", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.hostname, func(t *testing.T) {
+			fake := newFakeProvider()
+			h := NewDynDNSHandler(Config{Provider: fake, AllowedHostnames: allowed})
+			rec := serve(h, "/nic/update?hostname="+tc.hostname+"&myip=1.2.3.4", nil)
+			if tc.allowed {
+				if rec.Code != http.StatusOK || body(rec) != "good 1.2.3.4" {
+					t.Fatalf("expected update, got %d %q", rec.Code, body(rec))
+				}
+				return
+			}
+			if rec.Code != http.StatusForbidden || body(rec) != "nohost" {
+				t.Fatalf("expected 403 nohost, got %d %q", rec.Code, body(rec))
+			}
+			if len(fake.updates) != 0 {
+				t.Fatalf("unexpected provider update")
+			}
+		})
+	}
+
+	// UniFi path format is checked as well
+	h := NewDynDNSHandler(Config{Provider: newFakeProvider(), AllowedHostnames: allowed})
+	if rec := serve(h, "/other.example.com?myip=1.2.3.4", nil); rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for UniFi format, got %d", rec.Code)
+	}
+}
+
+func TestSplitHostname(t *testing.T) {
+	testCases := []struct {
+		configured string
+		hostname   string
+		domain     string
+		subdomain  string
+	}{
+		{"", "test.example.com", "example.com", "test"},
+		{"", "example.com", "example.com", "@"},
+		{"", "*.example.com", "example.com", "*"},
+		{"example.co.uk", "home.example.co.uk", "example.co.uk", "home"},
+		{"example.co.uk", "example.co.uk", "example.co.uk", "@"},
+		{"example.co.uk", "home.other.org", "other.org", "home"},
+		{"example.com", "a.b.example.com", "example.com", "a.b"},
+	}
+	for _, tc := range testCases {
+		h := NewDynDNSHandler(Config{Domain: tc.configured})
+		domain, subdomain := h.splitHostname(tc.hostname)
+		if domain != tc.domain || subdomain != tc.subdomain {
+			t.Errorf("splitHostname(%q) with DOMAIN=%q = %q, %q; expected %q, %q",
+				tc.hostname, tc.configured, domain, subdomain, tc.domain, tc.subdomain)
+		}
+	}
+}

@@ -29,12 +29,17 @@ func RunServer(port int, config *Config) error {
 	}
 
 	logger.Info("Using DNS provider: %s", p.Name())
+	if len(config.AllowedHostnames) == 0 {
+		logger.Warn("ALLOWED_HOSTNAMES is not set: authenticated clients can update any hostname the provider manages")
+	}
 
 	clientIPResolver := clientip.Resolver{TrustedProxies: config.TrustedProxies}
 
 	dyndnsHandler := handler.NewDynDNSHandler(handler.Config{
 		Provider:            p,
 		DefaultTTL:          config.DefaultTTL,
+		Domain:              config.Domain,
+		AllowedHostnames:    config.AllowedHostnames,
 		ClientIP:            clientIPResolver,
 		AllowPrivateIPs:     config.AllowPrivateIPs,
 		CleanupStaleRecords: config.CleanupStaleRecords,

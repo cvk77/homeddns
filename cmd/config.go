@@ -24,9 +24,23 @@ type Config struct {
 	SSL                 bool
 	CertFile            string
 	KeyFile             string
+	AllowedHostnames    []string
 	TrustedProxies      []netip.Prefix
 	AllowPrivateIPs     bool
 	CleanupStaleRecords bool
+}
+
+// parseHostnameList parses a comma-separated list of hostnames or
+// "*.suffix" patterns into normalized lowercase entries.
+func parseHostnameList(list string) []string {
+	var hostnames []string
+	for _, entry := range strings.Split(list, ",") {
+		entry = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(entry), "."))
+		if entry != "" {
+			hostnames = append(hostnames, entry)
+		}
+	}
+	return hostnames
 }
 
 // envBool reports whether an environment variable is set to "true" or "1".
@@ -149,17 +163,21 @@ func LoadConfig() (*Config, error) {
 	if provider := os.Getenv("DNS_PROVIDER"); provider != "" {
 		logger.Debug("Reading DNS_PROVIDER from env: %s", provider)
 		config.Provider = strings.ToLower(provider)
+		if config.Provider == "route53" {
+			config.Provider = "aws_route53" // alias
+		}
 		logger.Debug("Set DNS provider to: %s", config.Provider)
 	} else {
 		logger.Debug("DNS_PROVIDER not set, using default: %s", config.Provider)
 	}
 
-	// Domain
-	config.Domain = os.Getenv("DOMAIN")
-	if config.Domain == "" {
-		return nil, logger.Errorf("DOMAIN is required")
-	}
+	// Domain (required by the update command, optional for the server)
+	config.Domain = strings.ToLower(strings.TrimSuffix(os.Getenv("DOMAIN"), "."))
 	logger.Debug("Domain: %s", config.Domain)
+
+	// Hostname authorization
+	config.AllowedHostnames = parseHostnameList(os.Getenv("ALLOWED_HOSTNAMES"))
+	logger.Debug("Allowed hostnames: %v", config.AllowedHostnames)
 
 	// TTL
 	if ttl := os.Getenv("DNS_TTL"); ttl != "" {

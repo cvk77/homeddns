@@ -19,6 +19,11 @@ import (
 type Config struct {
 	Provider   provider.Provider
 	DefaultTTL int
+	// Domain, if set, is used as the zone for hostnames within it.
+	Domain string
+	// AllowedHostnames restricts which hostnames may be updated. Entries
+	// are exact names or "*.suffix" patterns; empty allows all hostnames.
+	AllowedHostnames []string
 	// ClientIP determines the client address when no myip/myipv6 is given.
 	ClientIP clientip.Resolver
 	// AllowPrivateIPs disables the rejection of non-public addresses.
@@ -70,6 +75,12 @@ func (h *DynDNSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Validate and parse hostname
 	hostname = h.normalizeHostname(hostname)
 	logger.Debug("Normalized hostname: %s", hostname)
+
+	if !h.hostnameAllowed(hostname) {
+		logger.Warn("Hostname %s is not in ALLOWED_HOSTNAMES, rejecting request from %s", hostname, r.RemoteAddr)
+		h.respondStatus(w, http.StatusForbidden, "nohost", "", isStandardFormat)
+		return
+	}
 
 	domain, subdomain := h.splitHostname(hostname)
 	if domain == "" {
@@ -152,10 +163,38 @@ func (h *DynDNSHandler) normalizeHostname(hostname string) string {
 	return strings.ToLower(hostname)
 }
 
-// splitHostname splits a hostname into domain and subdomain
+// hostnameAllowed reports whether hostname matches AllowedHostnames.
+func (h *DynDNSHandler) hostnameAllowed(hostname string) bool {
+	if len(h.config.AllowedHostnames) == 0 {
+		return true
+	}
+	for _, allowed := range h.config.AllowedHostnames {
+		if suffix, isPattern := strings.CutPrefix(allowed, "*"); isPattern {
+			if strings.HasPrefix(suffix, ".") && len(hostname) > len(suffix) && strings.HasSuffix(hostname, suffix) {
+				return true
+			}
+		} else if hostname == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// splitHostname splits a hostname into domain and subdomain.
+// If the configured Domain contains the hostname, it is used as the domain;
+// otherwise the last two labels are assumed to be the domain.
 // Example: "test.example.com" -> domain="example.com", subdomain="test"
 // Example: "*.example.com" -> domain="example.com", subdomain="*"
 func (h *DynDNSHandler) splitHostname(hostname string) (domain, subdomain string) {
+	if configured := strings.ToLower(h.config.Domain); configured != "" {
+		if hostname == configured {
+			return configured, "@"
+		}
+		if prefix, ok := strings.CutSuffix(hostname, "."+configured); ok && prefix != "" {
+			return configured, prefix
+		}
+	}
+
 	parts := strings.Split(hostname, ".")
 	if len(parts) < 2 {
 		return "", ""
@@ -294,7 +333,13 @@ func (h *DynDNSHandler) buildHostname(subdomain, domain string) string {
 
 // respond sends a DynDNS response
 func (h *DynDNSHandler) respond(w http.ResponseWriter, status, ip string, standardFormat bool) {
+	h.respondStatus(w, http.StatusOK, status, ip, standardFormat)
+}
+
+// respondStatus sends a DynDNS response with the given HTTP status code
+func (h *DynDNSHandler) respondStatus(w http.ResponseWriter, code int, status, ip string, standardFormat bool) {
 	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(code)
 
 	if standardFormat {
 		// Standard format includes IP

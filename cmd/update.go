@@ -12,6 +12,10 @@ import (
 )
 
 func RunUpdate(hostname, recordType string, config *Config) error {
+	if config.Domain == "" {
+		return fmt.Errorf("DOMAIN is required for the update command")
+	}
+
 	publicIP, err := getPublicIP()
 	if err != nil {
 		return fmt.Errorf("failed to get public IP: %w", err)
