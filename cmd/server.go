@@ -48,6 +48,7 @@ func RunServer(port int, config *Config) error {
 	authMiddleware := auth.Middleware(auth.Config{
 		Username: config.Username,
 		Password: config.Password,
+		ClientIP: clientIPResolver,
 	})
 
 	mux := http.NewServeMux()
