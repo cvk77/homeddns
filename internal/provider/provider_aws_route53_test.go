@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -159,4 +160,29 @@ func TestAwsRoute53Client_UpdateRecord(t *testing.T) {
 	if changeCalls != 1 {
 		t.Fatalf("expected 1 change call, got %d", changeCalls)
 	}
+}
+
+func TestAwsRoute53Client_ConcurrentZoneLookup(t *testing.T) {
+	mockAPI := &mockRoute53API{
+		ListHostedZonesFunc: func(ctx context.Context, params *route53.ListHostedZonesInput, optFns ...func(*route53.Options)) (*route53.ListHostedZonesOutput, error) {
+			return &route53.ListHostedZonesOutput{HostedZones: []types.HostedZone{{
+				Id:   aws.String("/hostedzone/ZONE123"),
+				Name: aws.String("example.com."),
+			}}}, nil
+		},
+	}
+	client := NewAwsRoute53ClientWithMock(mockAPI)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			zoneID, err := client.getHostedZoneID(context.Background(), "example.com")
+			if err != nil || zoneID != "ZONE123" {
+				t.Errorf("unexpected result: %q, %v", zoneID, err)
+			}
+		}()
+	}
+	wg.Wait()
 }

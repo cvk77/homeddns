@@ -70,6 +70,11 @@ ko build . --bare --sbom=none --platform=linux/amd64,linux/arm64,linux/arm/v7 --
 description = "Run all tests"
 run = "go test ./..."
 
+[tasks."test:race"]
+description = "Run all tests with the race detector (requires cgo)"
+run = "go test -race ./..."
+env = { CGO_ENABLED = "1" }
+
 [tasks."test:verbose"]
 description = "Run all tests with verbose output"
 run = "go test -v ./..."
@@ -110,13 +115,13 @@ run = "rm -rf homeddns homeddns-linux-* cdk-dynamic-dns dyndns *.tar dist/"
 # CI/CD tasks
 [tasks.ci]
 description = "Run full CI pipeline (verify, test, build, validate)"
-depends = ["tidy", "test", "build", "build:ko", "release:validate"]
+depends = ["tidy", "test", "test:race", "build", "build:ko", "release:validate"]
 run = """
 echo "✅ CI pipeline completed successfully"
 echo ""
 echo "Summary:"
 echo "  - Dependencies verified and tidied"
-echo "  - All tests passed"
+echo "  - All tests passed (including race detector)"
 echo "  - Binary built successfully"
 echo "  - Ko image built locally"
 echo "  - GoReleaser config validated"

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -25,6 +26,7 @@ type Route53API interface {
 // AwsRoute53Client represents an AWS Route53 client
 type AwsRoute53Client struct {
 	client    Route53API
+	zoneMu    sync.RWMutex
 	zoneCache map[string]string // domain -> hostedZoneId cache
 }
 
@@ -182,7 +184,10 @@ func (c *AwsRoute53Client) Close(ctx context.Context) error {
 // getHostedZoneID retrieves the hosted zone ID for a domain
 func (c *AwsRoute53Client) getHostedZoneID(ctx context.Context, domain string) (string, error) {
 	// Check cache first
-	if zoneID, exists := c.zoneCache[domain]; exists {
+	c.zoneMu.RLock()
+	zoneID, exists := c.zoneCache[domain]
+	c.zoneMu.RUnlock()
+	if exists {
 		logger.Debug("AWS Route53: Using cached zone ID for domain %s", domain)
 		return zoneID, nil
 	}
@@ -209,7 +214,9 @@ func (c *AwsRoute53Client) getHostedZoneID(ctx context.Context, domain string) (
 				zoneID := aws.ToString(zone.Id)
 				// Strip /hostedzone/ prefix if present
 				zoneID = strings.TrimPrefix(zoneID, "/hostedzone/")
+				c.zoneMu.Lock()
 				c.zoneCache[domain] = zoneID
+				c.zoneMu.Unlock()
 				return zoneID, nil
 			}
 		}
