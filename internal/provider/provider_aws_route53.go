@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -26,8 +27,9 @@ type Route53API interface {
 // AwsRoute53Client represents an AWS Route53 client
 type AwsRoute53Client struct {
 	client    Route53API
+	zoneID    string // fixed hosted zone ID (ROUTE53_ZONE_ID); skips zone discovery when set
 	zoneMu    sync.RWMutex
-	zoneCache map[string]string // domain -> hostedZoneId cache
+	zoneCache map[string]string // hostname -> hostedZoneId cache
 }
 
 // NewAwsRoute53Client creates a new Route53 client
@@ -57,6 +59,12 @@ func NewAwsRoute53ClientWithConfig(cfg aws.Config) *AwsRoute53Client {
 	}
 }
 
+// WithZoneID pins the client to a hosted zone and disables zone discovery.
+func (c *AwsRoute53Client) WithZoneID(zoneID string) *AwsRoute53Client {
+	c.zoneID = strings.TrimPrefix(zoneID, "/hostedzone/")
+	return c
+}
+
 // NewAwsRoute53ClientWithMock creates a new Route53 client with a mock API for testing
 func NewAwsRoute53ClientWithMock(mock Route53API) *AwsRoute53Client {
 	return &AwsRoute53Client{
@@ -70,40 +78,21 @@ func (c *AwsRoute53Client) Name() string {
 	return "aws_route53"
 }
 
-// GetRecord retrieves a specific DNS record
+// GetRecord retrieves a specific DNS record.
+// The hosted zone is determined from the hostname; the domain argument is
+// only used for logging.
 func (c *AwsRoute53Client) GetRecord(ctx context.Context, domain, hostname, recordType string) (*DNSRecord, error) {
 	logger.Debug("AWS Route53: Getting record for domain=%s, hostname=%s, type=%s", domain, hostname, recordType)
 
 	// Get hosted zone ID
-	zoneID, err := c.getHostedZoneID(ctx, domain)
+	zoneID, err := c.getHostedZoneID(ctx, hostname)
 	if err != nil {
 		return nil, fmt.Errorf("get hosted zone: %w", err)
 	}
 
-	// Ensure hostname ends with a dot for Route53
-	fqdn := c.ensureTrailingDot(hostname)
-
-	// List resource record sets
-	input := &route53.ListResourceRecordSetsInput{
-		HostedZoneId:    aws.String(zoneID),
-		StartRecordName: aws.String(fqdn),
-		StartRecordType: types.RRType(recordType),
-		MaxItems:        aws.Int32(1),
-	}
-
-	result, err := c.client.ListResourceRecordSets(ctx, input)
+	recordSet, err := c.findRecordSet(ctx, zoneID, hostname, recordType)
 	if err != nil {
-		return nil, fmt.Errorf("list record sets: %w", err)
-	}
-
-	// Check if we found the record
-	if len(result.ResourceRecordSets) == 0 {
-		return nil, ErrRecordNotFound
-	}
-
-	recordSet := result.ResourceRecordSets[0]
-	if aws.ToString(recordSet.Name) != fqdn || string(recordSet.Type) != recordType {
-		return nil, ErrRecordNotFound
+		return nil, err
 	}
 
 	// Extract value
@@ -120,12 +109,46 @@ func (c *AwsRoute53Client) GetRecord(ctx context.Context, domain, hostname, reco
 	}, nil
 }
 
+// findRecordSet returns the record set with exactly the given name and type.
+func (c *AwsRoute53Client) findRecordSet(ctx context.Context, zoneID, hostname, recordType string) (*types.ResourceRecordSet, error) {
+	// Ensure hostname ends with a dot for Route53
+	fqdn := c.ensureTrailingDot(hostname)
+
+	input := &route53.ListResourceRecordSetsInput{
+		HostedZoneId:    aws.String(zoneID),
+		StartRecordName: aws.String(fqdn),
+		StartRecordType: types.RRType(recordType),
+		MaxItems:        aws.Int32(1),
+	}
+
+	result, err := c.client.ListResourceRecordSets(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("list record sets: %w", err)
+	}
+
+	if len(result.ResourceRecordSets) == 0 {
+		return nil, ErrRecordNotFound
+	}
+
+	recordSet := result.ResourceRecordSets[0]
+	if !strings.EqualFold(normalizeRecordName(aws.ToString(recordSet.Name)), normalizeRecordName(fqdn)) || string(recordSet.Type) != recordType {
+		return nil, ErrRecordNotFound
+	}
+	return &recordSet, nil
+}
+
+// normalizeRecordName converts Route53's octal escape for "*" back to the
+// literal character so wildcard names compare equal.
+func normalizeRecordName(name string) string {
+	return strings.ReplaceAll(name, `\052`, "*")
+}
+
 // UpdateRecord updates or creates a DNS record
 func (c *AwsRoute53Client) UpdateRecord(ctx context.Context, domain string, record *DNSRecord) (bool, error) {
 	logger.Debug("AWS Route53: Updating record for domain=%s, name=%s, type=%s, value=%s", domain, record.Name, record.Type, record.Value)
 
 	// Get hosted zone ID
-	zoneID, err := c.getHostedZoneID(ctx, domain)
+	zoneID, err := c.getHostedZoneID(ctx, record.Name)
 	if err != nil {
 		return false, fmt.Errorf("get hosted zone: %w", err)
 	}
@@ -181,21 +204,28 @@ func (c *AwsRoute53Client) Close(ctx context.Context) error {
 	return nil
 }
 
-// getHostedZoneID retrieves the hosted zone ID for a domain
-func (c *AwsRoute53Client) getHostedZoneID(ctx context.Context, domain string) (string, error) {
+// getHostedZoneID returns the hosted zone for a hostname: the public zone
+// with the longest name that is a suffix of the hostname. A zone ID
+// configured via ROUTE53_ZONE_ID takes precedence.
+func (c *AwsRoute53Client) getHostedZoneID(ctx context.Context, hostname string) (string, error) {
+	if c.zoneID != "" {
+		return c.zoneID, nil
+	}
+
+	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
+
 	// Check cache first
 	c.zoneMu.RLock()
-	zoneID, exists := c.zoneCache[domain]
+	zoneID, exists := c.zoneCache[hostname]
 	c.zoneMu.RUnlock()
 	if exists {
-		logger.Debug("AWS Route53: Using cached zone ID for domain %s", domain)
+		logger.Debug("AWS Route53: Using cached zone ID for %s", hostname)
 		return zoneID, nil
 	}
 
-	logger.Debug("AWS Route53: Looking up hosted zone ID for domain %s", domain)
+	logger.Debug("AWS Route53: Looking up hosted zone ID for %s", hostname)
 
-	// Ensure domain ends with a dot
-	domainWithDot := c.ensureTrailingDot(domain)
+	var bestName, bestID string
 
 	// List hosted zones manually for mockability
 	var marker *string
@@ -210,14 +240,16 @@ func (c *AwsRoute53Client) getHostedZoneID(ctx context.Context, domain string) (
 		}
 
 		for _, zone := range output.HostedZones {
-			if aws.ToString(zone.Name) == domainWithDot {
-				zoneID := aws.ToString(zone.Id)
-				// Strip /hostedzone/ prefix if present
-				zoneID = strings.TrimPrefix(zoneID, "/hostedzone/")
-				c.zoneMu.Lock()
-				c.zoneCache[domain] = zoneID
-				c.zoneMu.Unlock()
-				return zoneID, nil
+			if zone.Config != nil && zone.Config.PrivateZone {
+				continue
+			}
+			zoneName := strings.ToLower(strings.TrimSuffix(aws.ToString(zone.Name), "."))
+			if hostname != zoneName && !strings.HasSuffix(hostname, "."+zoneName) {
+				continue
+			}
+			if len(zoneName) > len(bestName) {
+				bestName = zoneName
+				bestID = strings.TrimPrefix(aws.ToString(zone.Id), "/hostedzone/")
 			}
 		}
 
@@ -227,7 +259,15 @@ func (c *AwsRoute53Client) getHostedZoneID(ctx context.Context, domain string) (
 		marker = output.NextMarker
 	}
 
-	return "", fmt.Errorf("hosted zone for domain %s not found", domain)
+	if bestID == "" {
+		return "", fmt.Errorf("no public hosted zone found for %s", hostname)
+	}
+
+	logger.Debug("AWS Route53: Using hosted zone %s (%s) for %s", bestName, bestID, hostname)
+	c.zoneMu.Lock()
+	c.zoneCache[hostname] = bestID
+	c.zoneMu.Unlock()
+	return bestID, nil
 }
 
 // ensureTrailingDot ensures the hostname ends with a dot
@@ -244,6 +284,15 @@ func init() {
 
 // NewRoute53Provider creates a new AWS Route53 provider
 // It uses the default AWS SDK configuration chain (env vars, ~/.aws/credentials, IAM roles, etc.)
+// If ROUTE53_ZONE_ID is set, all records are written to that hosted zone.
 func NewRoute53Provider(ctx context.Context, config interface{}) (Provider, error) {
-	return NewAwsRoute53Client(ctx)
+	client, err := NewAwsRoute53Client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if zoneID := os.Getenv("ROUTE53_ZONE_ID"); zoneID != "" {
+		logger.Info("AWS Route53: Using fixed hosted zone %s (ROUTE53_ZONE_ID)", zoneID)
+		client.WithZoneID(zoneID)
+	}
+	return client, nil
 }

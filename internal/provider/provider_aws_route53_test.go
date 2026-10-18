@@ -223,3 +223,99 @@ func TestAwsRoute53Client_UpdateRecordUnchanged(t *testing.T) {
 		t.Fatalf("expected record to be reported as unchanged")
 	}
 }
+
+func zonesMock(zones ...types.HostedZone) *mockRoute53API {
+	return &mockRoute53API{
+		ListHostedZonesFunc: func(ctx context.Context, params *route53.ListHostedZonesInput, optFns ...func(*route53.Options)) (*route53.ListHostedZonesOutput, error) {
+			return &route53.ListHostedZonesOutput{HostedZones: zones}, nil
+		},
+	}
+}
+
+func zone(id, name string, private bool) types.HostedZone {
+	return types.HostedZone{
+		Id:     aws.String("/hostedzone/" + id),
+		Name:   aws.String(name),
+		Config: &types.HostedZoneConfig{PrivateZone: private},
+	}
+}
+
+func TestAwsRoute53Client_ZoneDiscovery(t *testing.T) {
+	mockAPI := zonesMock(
+		zone("COUK", "example.co.uk.", false),
+		zone("COM", "example.com.", false),
+		zone("DYN", "dyn.example.com.", false),
+		zone("PRIVATE", "home.example.com.", true),
+		zone("OTHER", "ample.com.", false),
+	)
+
+	testCases := []struct {
+		hostname string
+		expected string
+	}{
+		{"home.example.co.uk", "COUK"},
+		{"example.com", "COM"},
+		{"www.example.com", "COM"},
+		{"a.dyn.example.com", "DYN"},
+		{"*.dyn.example.com", "DYN"},
+		{"dyn.example.com.", "DYN"},
+		{"home.example.com", "COM"}, // private zone is ignored
+	}
+
+	client := NewAwsRoute53ClientWithMock(mockAPI)
+	for _, tc := range testCases {
+		t.Run(tc.hostname, func(t *testing.T) {
+			zoneID, err := client.getHostedZoneID(context.Background(), tc.hostname)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if zoneID != tc.expected {
+				t.Fatalf("expected zone %s, got %s", tc.expected, zoneID)
+			}
+		})
+	}
+
+	if _, err := client.getHostedZoneID(context.Background(), "example.org"); err == nil {
+		t.Fatalf("expected error for hostname without zone")
+	}
+}
+
+func TestAwsRoute53Client_FixedZoneID(t *testing.T) {
+	mockAPI := &mockRoute53API{} // ListHostedZones must not be called
+	client := NewAwsRoute53ClientWithMock(mockAPI).WithZoneID("/hostedzone/FIXED")
+
+	zoneID, err := client.getHostedZoneID(context.Background(), "home.example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if zoneID != "FIXED" {
+		t.Fatalf("expected FIXED, got %s", zoneID)
+	}
+}
+
+func TestAwsRoute53Client_WildcardUnchanged(t *testing.T) {
+	mockAPI := zonesMock(zone("ZONE123", "example.com.", false))
+	mockAPI.ListResourceRecordSetsFunc = func(ctx context.Context, params *route53.ListResourceRecordSetsInput, optFns ...func(*route53.Options)) (*route53.ListResourceRecordSetsOutput, error) {
+		return &route53.ListResourceRecordSetsOutput{ResourceRecordSets: []types.ResourceRecordSet{{
+			Name:            aws.String(`\052.example.com.`),
+			Type:            types.RRTypeAaaa,
+			TTL:             aws.Int64(60),
+			ResourceRecords: []types.ResourceRecord{{Value: aws.String("2001:db8::1")}},
+		}}}, nil
+	}
+	mockAPI.ChangeResourceRecordSetsFunc = func(ctx context.Context, params *route53.ChangeResourceRecordSetsInput, optFns ...func(*route53.Options)) (*route53.ChangeResourceRecordSetsOutput, error) {
+		t.Fatalf("unexpected change call for unchanged wildcard record")
+		return nil, nil
+	}
+
+	client := NewAwsRoute53ClientWithMock(mockAPI)
+	changed, err := client.UpdateRecord(context.Background(), "example.com", &DNSRecord{
+		Name: "*.example.com", Type: "AAAA", Value: "2001:db8::1", TTL: 60,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if changed {
+		t.Fatalf("expected wildcard record to be reported as unchanged")
+	}
+}
