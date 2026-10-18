@@ -1,3 +1,5 @@
+//go:build aws_route53 || (!netcup_ccp && !aws_route53)
+
 package provider
 
 import (

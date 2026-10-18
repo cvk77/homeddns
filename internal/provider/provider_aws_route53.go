@@ -1,5 +1,4 @@
-//go:build aws_route53 || (!netcup && !aws_route53)
-// +build aws_route53 !netcup,!aws_route53
+//go:build aws_route53 || (!netcup_ccp && !aws_route53)
 
 package provider
 

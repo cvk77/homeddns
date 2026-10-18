@@ -1,5 +1,4 @@
 //go:build netcup_ccp || (!netcup_ccp && !aws_route53)
-// +build netcup_ccp !netcup_ccp,!aws_route53
 
 package provider
 

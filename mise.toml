@@ -75,6 +75,24 @@ description = "Run all tests with the race detector (requires cgo)"
 run = "go test -race ./..."
 env = { CGO_ENABLED = "1" }
 
+[tasks."test:tags"]
+description = "Build and test single-provider variants (netcup_ccp, aws_route53 build tags)"
+run = """
+check_excluded() {
+  if go list -tags "$1" -f '{% raw %}{{.GoFiles}}{% endraw %}' ./internal/provider | grep -q "$2"; then
+    echo "Error: -tags $1 must not compile $2"
+    exit 1
+  fi
+}
+check_excluded netcup_ccp provider_aws_route53.go
+check_excluded aws_route53 provider_netcup_ccp.go
+for tags in netcup_ccp aws_route53; do
+  echo "Testing with -tags ${tags}"
+  go vet -tags "${tags}" ./...
+  go test -tags "${tags}" ./...
+done
+"""
+
 [tasks."test:verbose"]
 description = "Run all tests with verbose output"
 run = "go test -v ./..."
@@ -115,7 +133,7 @@ run = "rm -rf homeddns homeddns-linux-* cdk-dynamic-dns dyndns *.tar dist/"
 # CI/CD tasks
 [tasks.ci]
 description = "Run full CI pipeline (verify, test, build, validate)"
-depends = ["tidy", "test", "test:race", "build", "build:ko", "release:validate"]
+depends = ["tidy", "test", "test:race", "test:tags", "build", "build:ko", "release:validate"]
 run = """
 echo "✅ CI pipeline completed successfully"
 echo ""
