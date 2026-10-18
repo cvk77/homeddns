@@ -142,6 +142,9 @@ func LoadConfig() (*Config, error) {
 		if err != nil {
 			return nil, logger.Errorf("invalid PORT: %w", err)
 		}
+		if p < 1 || p > 65535 {
+			return nil, logger.Errorf("invalid PORT: %d is out of range", p)
+		}
 		config.Port = p
 		logger.Debug("Set port to: %d", p)
 	}

@@ -15,6 +15,7 @@ func setBaseEnv(t *testing.T) {
 	t.Setenv("ALLOW_PRIVATE_IPS", "")
 	t.Setenv("CLEANUP_STALE_RECORD", "")
 	t.Setenv("SSL", "")
+	t.Setenv("PORT", "")
 }
 
 func TestLoadConfig_DomainOptional(t *testing.T) {
@@ -71,5 +72,34 @@ func TestLoadConfig_IPOptions(t *testing.T) {
 	t.Setenv("TRUSTED_PROXIES", "not-a-cidr")
 	if _, err := LoadConfig(); err == nil {
 		t.Fatalf("expected error for invalid TRUSTED_PROXIES")
+	}
+}
+
+func TestLoadConfig_Port(t *testing.T) {
+	setBaseEnv(t)
+
+	t.Setenv("PORT", "")
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if config.Port != 8053 {
+		t.Fatalf("expected default port 8053, got %d", config.Port)
+	}
+
+	t.Setenv("PORT", "9000")
+	config, err = LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if config.Port != 9000 {
+		t.Fatalf("expected port 9000, got %d", config.Port)
+	}
+
+	for _, invalid := range []string{"abc", "0", "70000"} {
+		t.Setenv("PORT", invalid)
+		if _, err := LoadConfig(); err == nil {
+			t.Fatalf("expected error for PORT=%s", invalid)
+		}
 	}
 }

@@ -417,7 +417,7 @@ Behind carrier-grade NAT the gateway has no public IPv4 address, but usually a p
 | `CERTFILE`               | With `SSL`        | `/ssl/fullchain.pem` | Certificate path; relative paths are resolved below `/ssl/` |
 | `KEYFILE`                | With `SSL`        | `/ssl/privkey.pem`   | Key path; relative paths are resolved below `/ssl/` |
 | `LOG_LEVEL`              | No                | `info`       | `debug`, `info`, `warn` or `error` |
-| `PORT`                   | No                | `8053`       | Read and validated, but currently **not applied**: the listen port comes from the `--port` flag of the `server` command (default `8053`) |
+| `PORT`                   | No                | `8053`       | Listen port. The `--port` flag of the `server` command takes precedence |
 | `ADDON_OPTIONS_PATH`     | No                | -            | Home Assistant `options.json`; its keys are exported as upper-case environment variables |
 | `NETCUP_CUSTOMER_NUMBER` | Netcup            | -            | Netcup customer number |
 | `NETCUP_API_KEY`         | Netcup            | -            | Netcup API key |

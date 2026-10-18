@@ -14,7 +14,7 @@ import (
 // CLI holds the command-line interface structure.
 type CLI struct {
 	Server struct {
-		Port int `help:"Port to listen on." default:"8053"`
+		Port int `help:"Port to listen on (overrides the PORT environment variable, default 8053)."`
 	} `cmd:"" help:"Run as a web server."`
 
 	Update struct {
@@ -38,6 +38,15 @@ func versionString() string {
 		return trimmed
 	}
 	return fallbackVersion
+}
+
+// serverPort returns the --port flag if given, otherwise the configured
+// port (PORT environment variable or its default).
+func serverPort(flagPort, configPort int) int {
+	if flagPort != 0 {
+		return flagPort
+	}
+	return configPort
 }
 
 func ensureServerDefaultForContainer() {
@@ -96,7 +105,7 @@ func main() {
 
 	switch ctx.Command() {
 	case "server":
-		err = cmd.RunServer(cli.Server.Port, config)
+		err = cmd.RunServer(serverPort(cli.Server.Port, config.Port), config)
 	case "update <hostname>":
 		err = cmd.RunUpdate(cli.Update.Hostname, cli.Update.Type, config)
 	default:
