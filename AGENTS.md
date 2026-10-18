@@ -9,6 +9,7 @@
 - **Build Multi-platform**: `mise run build:ko-multiplatform`
 - **Run Server**: `mise run run`
 - **Test All**: `mise run test`
+- **Test with Race Detector**: `mise run test:race` (part of `mise run ci`, needs cgo)
 - **Test Single Package**: `go test ./internal/provider`
 - **Format Code**: `mise run fmt`
 - **Clean Build Artifacts**: `mise run clean`
@@ -47,10 +48,11 @@ All builds use aggressive optimization flags for minimal binary size:
 - **Separation of Concerns**: `cmd/` for CLI/config, `internal/` for business logic, providers self-contained
 
 ## Architecture Notes
-- **Provider Interface**: All DNS providers implement `Provider` interface with `Name()`, `GetRecord()`, `UpdateRecord()`, `Close()`
+- **Provider Interface**: All DNS providers implement `Provider` interface with `Name()`, `GetRecord()` (returns `ErrRecordNotFound`), `UpdateRecord()` (reports whether a change was sent), `DeleteRecord()`, `Close()`
+- **Client IPs**: `internal/clientip` parses and validates update addresses (`net/netip`) and resolves the client address (`TRUSTED_PROXIES`)
 - **Credential Loading**: Providers load their own credentials (e.g., `LoadNetcupConfig()` checks env vars then `~/.homeddns/netcup_credentials`)
 - **Factory Pattern**: Providers register via `RegisterFactory()` in `init()` functions
-- **No Tests Present**: Add tests when modifying critical logic (especially providers and handlers)
+- **Tests**: Tests exist for both providers (`internal/provider`), the handler, auth, client IP handling and config loading. Add a test for every fix and when modifying critical logic
 
 ## Release Workflow
 The project uses a **Ko-first** strategy with clean separation of concerns:
@@ -85,9 +87,10 @@ The project uses a **Ko-first** strategy with clean separation of concerns:
 - **Tags**: `latest`, `{version}` for containers
 
 ## Reference Documentation
-If you are unsure about build tools or configurations, check the `repomix/` folder:
-- **goreleaser.xml**: Complete documentation for GoReleaser (multi-platform release builds)
-- **ko.xml**: Complete documentation for Ko (containerless Kubernetes image builder)
+A `repomix/` folder with packed GoReleaser and Ko documentation (`goreleaser.xml`, `ko.xml`) is not part of the repository; it is listed in `.gitignore` as a local, temporary folder. If it is missing, use the official documentation:
+- **GoReleaser**: https://goreleaser.com/
+- **Ko**: https://ko.build/
 
 ## Git Practices
 - **Conventional commits**: Always format commit messages using the Conventional Commits specification so release tooling can infer version bumps and changelog entries.
+- **AI attribution**: Commits created in Claude Code sessions end with the trailer `Co-authored-by: Claude <noreply@anthropic.com>`.
