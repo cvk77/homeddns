@@ -659,6 +659,11 @@ kubectl logs -l app=homeddns --tail=100 -f
 - Sessions are automatically refreshed every 10 minutes
 - If you see frequent re-logins, check network connectivity to Netcup API
 
+## AI-assisted development
+
+- **This fork** ([cvk77/homeddns](https://github.com/cvk77/homeddns)): Changes were created with Claude Code (an AI coding assistant) and reviewed by @cvk77. Commits from these sessions carry the trailer `Co-authored-by: Claude <noreply@anthropic.com>`.
+- **Upstream** ([markussiebert/homeddns](https://github.com/markussiebert/homeddns)): The repository contains an `AGENTS.md` file with instructions for coding agents. Whether and to what extent AI tools were used upstream is not documented.
+
 ## License
 
 This project inherits the license from the parent repository.
