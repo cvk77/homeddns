@@ -9,11 +9,13 @@ A lightweight, self-hosted DynDNS (Dynamic DNS) service with pluggable DNS provi
   - **AWS Route53**: Updates DNS records via AWS Route53 API
 - **Session Management**: Automatic session handling (Netcup: 15-minute timeout with proactive refresh)
 - **Multiple Formats**: Supports both standard DynDNS format and UniFi custom provider format
+- **IPv4 and IPv6**: Sets A and/or AAAA records (`myip`, `myipv6`), rejects private, CGNAT, link-local and other non-public addresses
 - **Wildcard DNS**: Full support for wildcard DNS records (e.g., `*.example.com`)
-- **Basic Authentication**: Simple and secure HTTP Basic Auth
+- **Basic Authentication**: HTTP Basic Auth with constant-time comparison and a limit on failed logins
+- **Hostname Allowlist**: Restrict which hostnames clients may update (`ALLOWED_HOSTNAMES`)
 - **Flexible Deployment**: Run with Docker Compose, Kubernetes, or Home Assistant addon
 - **Health Checks**: Built-in health endpoint for Kubernetes probes
-- **Minimal Attack Surface**: Uses distroless base image and runs as non-root
+- **Minimal Attack Surface**: Uses a distroless base image; the example Kubernetes manifests run it as non-root
 - **IAM Role Support**: AWS Route53 provider supports IRSA (IAM Roles for Service Accounts)
 
 ## Why Self-Host Dynamic DNS?
@@ -48,17 +50,16 @@ Mentions of **Netcup**, **AWS**, and **Route53** are strictly descriptive: they 
 │  └───────┬───────────────┘  │
 │          ▼                  │
 │  ┌───────────────────────┐  │
-│  │ Netcup CCP API Client │  │
-│  │ - Session Management  │  │
-│  │ - DNS Record Updates  │  │
+│  │ DNS Provider Client   │  │
+│  │ (Netcup CCP / Route53)│  │
 │  └───────┬───────────────┘  │
 └──────────┼──────────────────┘
            │ HTTPS
            ▼
-   ┌───────────────┐
-   │  Netcup CCP   │
-   │  API Endpoint │
-   └───────────────┘
+   ┌───────────────────┐
+   │ Netcup CCP API or │
+   │ AWS Route53 API   │
+   └───────────────────┘
 ```
 
 ## Prerequisites
@@ -66,7 +67,7 @@ Mentions of **Netcup**, **AWS**, and **Route53** are strictly descriptive: they 
 - **Deployment Platform** (choose one):
   - Docker / Docker Compose
   - Kubernetes cluster
-  - Home Assistant (addon coming soon)
+  - Home Assistant (add-on definition in [`homeassistant/`](homeassistant/))
 - **DNS Provider** (choose one):
   - **Netcup**: Account with API credentials, domain managed by Netcup
   - **Route53**: AWS account with Route53 hosted zone
@@ -90,7 +91,8 @@ services:
       - AUTH_USERNAME=dyndns
       - AUTH_PASSWORD=your-secure-password
       - DNS_PROVIDER=netcup_ccp
-      - DOMAIN=example.com
+      - DOMAIN=example.com          # optional, see Configuration
+      - ALLOWED_HOSTNAMES=home.example.com
       - DNS_TTL=60
       # Netcup credentials
       - NETCUP_CUSTOMER_NUMBER=123456
@@ -109,6 +111,17 @@ docker-compose up -d
 ### Option 1: Docker Compose (Above)
 
 ### Option 2: Kubernetes
+
+Example manifests are in [`k8s/`](k8s/):
+
+| File | Purpose |
+| ---- | ------- |
+| `k8s/secret.example.yaml` | Credentials (copy and fill in) |
+| `k8s/deployment.yaml` | Deployment for the Netcup provider |
+| `k8s/deployment-route53.yaml` | Deployment for Route53, including an IRSA ServiceAccount |
+| `k8s/service.yaml` | ClusterIP service on port 80 |
+
+The deployments use `/health` for readiness and liveness probes and run as UID 65532 with a read-only root filesystem.
 
 ### 1. Create Kubernetes Secret
 
@@ -132,15 +145,18 @@ kubectl create secret generic homeddns-secret \
 
 ### 2. Deploy to Kubernetes
 
+Adjust `ALLOWED_HOSTNAMES`, `DOMAIN` and `TRUSTED_PROXIES` in the deployment, then:
+
 ```bash
-# Apply manifests
-kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/deployment.yaml   # or k8s/deployment-route53.yaml
 kubectl apply -f k8s/service.yaml
 ```
 
-### 4. Expose the Service
+### 3. Expose the Service
 
 **Option A: Ingress (Recommended)**
+
+Behind an Ingress, the controller is the direct peer. Set `TRUSTED_PROXIES` to the controller's pod network so the client address is taken from `X-Forwarded-For`; otherwise automatic IP detection sees the controller's private address and rejects the update.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -188,11 +204,14 @@ The Netcup provider uses the CCP (Customer Control Panel) API to update DNS reco
 - `NETCUP_CUSTOMER_NUMBER` - Your Netcup customer number (required)
 - `NETCUP_API_KEY` - API key from CCP (required)
 - `NETCUP_API_PASSWORD` - API password from CCP (required)
+- `DOMAIN` - Optional. The Netcup zone is taken from `DOMAIN` if the hostname is within it, otherwise from the last two labels of the hostname. Set it for multi-label TLDs such as `example.co.uk`.
+
+Instead of the environment variables, the credentials can be stored in `~/.homeddns/netcup_credentials`.
 
 **Example Deployment:**
 
 ```bash
-ko apply -f k8s/deployment.yaml
+kubectl apply -f k8s/deployment.yaml
 ```
 
 **Features:**
@@ -207,20 +226,49 @@ The Route53 provider uses the AWS SDK to update DNS records in Route53 hosted zo
 
 **Environment Variables:**
 
-- `DNS_PROVIDER=route53`
+- `DNS_PROVIDER=aws_route53` (**required**: the default provider is `netcup_ccp`; `route53` is accepted as an alias)
+- `ROUTE53_ZONE_ID` - Optional. Use this hosted zone for all updates and skip zone discovery
+- `AWS_REGION` - Region for the AWS SDK (Route53 itself is global, e.g. `us-east-1`)
 - AWS credentials via one of:
   - **IRSA (Recommended for EKS)**: IAM Role for Service Accounts
   - **IAM Instance Profile**: Attached to EC2 instances
   - **Environment Variables**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
   - **Shared Credentials**: `~/.aws/credentials`
 
+`DOMAIN` is not needed for Route53. Without `ROUTE53_ZONE_ID`, the hosted zone is discovered per hostname: the public hosted zone with the longest name that is a suffix of the hostname wins (so `home.dyn.example.com` uses a delegated `dyn.example.com` zone if it exists, and `home.example.co.uk` works). Private hosted zones are ignored.
+
 **Example Deployment:**
 
 ```bash
-ko apply -f k8s/deployment-route53.yaml
+kubectl apply -f k8s/deployment-route53.yaml
 ```
 
 **Required IAM Permissions:**
+
+With zone discovery:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "route53:ListHostedZones",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListResourceRecordSets",
+        "route53:ChangeResourceRecordSets"
+      ],
+      "Resource": "arn:aws:route53:::hostedzone/*"
+    }
+  ]
+}
+```
+
+Minimal, with a fixed `ROUTE53_ZONE_ID` (no `ListHostedZones` needed). Optionally restrict the record names with the `route53:ChangeResourceRecordSetsNormalizedRecordNames` condition key:
 
 ```json
 {
@@ -229,11 +277,10 @@ ko apply -f k8s/deployment-route53.yaml
     {
       "Effect": "Allow",
       "Action": [
-        "route53:ListHostedZones",
         "route53:ListResourceRecordSets",
         "route53:ChangeResourceRecordSets"
       ],
-      "Resource": "*"
+      "Resource": "arn:aws:route53:::hostedzone/Z0123456789ABCDEFGHIJ"
     }
   ]
 }
@@ -247,15 +294,15 @@ ko apply -f k8s/deployment-route53.yaml
    apiVersion: v1
    kind: ServiceAccount
    metadata:
-     name: dyndns-route53
+     name: homeddns-route53
      annotations:
-       eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/dyndns-route53
+       eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/homeddns-route53
    ```
 3. Deploy using `k8s/deployment-route53.yaml`
 
 **Features:**
 
-- Automatic hosted zone discovery
+- Automatic hosted zone discovery (longest suffix match, public zones only) or a fixed zone via `ROUTE53_ZONE_ID`
 - Hosted zone caching for performance
 - Support for all DNS record types
 - Wildcard DNS support
@@ -266,7 +313,7 @@ ko apply -f k8s/deployment-route53.yaml
 The plugin system makes it easy to add new DNS providers:
 
 1. Implement the `provider.Provider` interface in `internal/provider/`
-2. Add provider initialization in `cmd/server/main.go`
+2. Register a factory in the file's `init()` function with `RegisterFactory("name", factory)`; the provider loads its own credentials
 3. Update documentation
 
 **Provider Interface:**
@@ -274,8 +321,12 @@ The plugin system makes it easy to add new DNS providers:
 ```go
 type Provider interface {
     Name() string
+    // GetRecord returns ErrRecordNotFound if the record does not exist.
     GetRecord(ctx context.Context, domain, hostname, recordType string) (*DNSRecord, error)
-    UpdateRecord(ctx context.Context, domain string, record *DNSRecord) error
+    // UpdateRecord reports changed=false if the record already had the value.
+    UpdateRecord(ctx context.Context, domain string, record *DNSRecord) (changed bool, err error)
+    // DeleteRecord deletes the record only if it still has the given value.
+    DeleteRecord(ctx context.Context, domain string, record *DNSRecord) error
     Close(ctx context.Context) error
 }
 ```
@@ -291,6 +342,21 @@ curl -u "dyndns:your-password" \
 
 Response: `good 1.2.3.4` or `nochg 1.2.3.4`
 
+### IPv6 and Dual Stack
+
+`myip` may be an IPv4 or IPv6 address. `myipv6` sets the AAAA record. If both are given, both records are set:
+
+```bash
+curl -u "dyndns:your-password" \
+  "https://dyndns.example.com/nic/update?hostname=home.example.com&myip=1.2.3.4&myipv6=2001:db8::1"
+```
+
+Response: `good 1.2.3.4,2001:db8::1` (`nochg` if neither record changed)
+
+IPv4-mapped addresses (`::ffff:1.2.3.4`) are treated as IPv4 and set as A record. Addresses with a zone ID (`fe80::1%eth0`) are rejected.
+
+(`2001:db8::/32` is a documentation prefix and is rejected by the server; use your real address.)
+
 ### UniFi Custom Provider Format
 
 ```bash
@@ -302,12 +368,18 @@ Response: `good` or `nochg`
 
 ### Automatic IP Detection
 
-Omit the `myip` parameter to automatically use the request source IP:
+Omit `myip`/`myipv6` to use the client address of the request:
 
 ```bash
 curl -u "dyndns:your-password" \
   "https://dyndns.example.com/nic/update?hostname=home.example.com"
 ```
+
+The client address is the TCP peer, unless the peer is listed in `TRUSTED_PROXIES`; then the `X-Forwarded-For` header is read from right to left and the first address that is not a trusted proxy is used. A client connecting over IPv6 sets the AAAA record, over IPv4 the A record.
+
+### Rejected Addresses
+
+Unless `ALLOW_PRIVATE_IPS=true`, the server answers `911` for addresses that cannot be a public DynDNS target: loopback, unspecified, multicast, link-local, RFC 1918 private, CGNAT (`100.64.0.0/10`), IPv6 ULA (`fc00::/7`) and documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `2001:db8::/32`, `3fff::/20`). The reason is logged as a warning.
 
 ### Wildcard DNS
 
@@ -316,28 +388,56 @@ curl -u "dyndns:your-password" \
   "https://dyndns.example.com/nic/update?hostname=*.example.com&myip=1.2.3.4"
 ```
 
+## IPv6 / CGNAT
+
+Behind carrier-grade NAT the gateway has no public IPv4 address, but usually a public IPv6 address. HomeDDNS can then be updated over IPv6:
+
+- **Leave out `myip`** in the router configuration. UniFi replaces `%i` with the WAN IPv4 address, which behind CGNAT is a `100.64.0.0/10` address and is rejected.
+- Without `myip`, the server uses the source address of the connection. If the gateway connects over IPv6, that is the **WAN IPv6 address of the gateway**, not of a LAN host, and the AAAA record is set.
+- The server must be **reachable via IPv6** (AAAA record for the server name), otherwise the gateway connects over IPv4. The server listens on `:<port>`, which in Go accepts IPv4 and IPv6 connections (dual stack). Behind a reverse proxy or Kubernetes Ingress, the proxy must be reachable via IPv6 and `TRUSTED_PROXIES` must be set.
+- An old A record of the same name may still point to a wrong address. Set `CLEANUP_STALE_RECORD=true` to delete the A record when an AAAA update succeeds (and vice versa). Deletion only happens after a lookup of the existing record and only when a single address family is updated.
+- For a LAN host (e.g. a server behind the gateway), the gateway's update does not help: the host has its own IPv6 address. Update a separate record for it with its own client, sending `myipv6`.
+
 ## Configuration
 
 ### Environment Variables
 
-| Variable                 | Required | Default | Description               |
-| ------------------------ | -------- | ------- | ------------------------- |
-| `PORT`                   | No       | `8053`  | HTTP server port          |
-| `AUTH_USERNAME`          | Yes      | -       | Basic auth username       |
-| `AUTH_PASSWORD`          | Yes      | -       | Basic auth password       |
-| `NETCUP_CUSTOMER_NUMBER` | Yes      | -       | Netcup customer number    |
-| `NETCUP_API_KEY`         | Yes      | -       | Netcup API key            |
-| `NETCUP_API_PASSWORD`    | Yes      | -       | Netcup API password       |
-| `DNS_TTL`                | No       | `60`    | DNS record TTL in seconds |
+| Variable                 | Required          | Default      | Description |
+| ------------------------ | ----------------- | ------------ | ----------- |
+| `AUTH_USERNAME`          | Yes               | -            | Basic auth username |
+| `AUTH_PASSWORD`          | Yes               | -            | Basic auth password (plain text, not a hash) |
+| `DNS_PROVIDER`           | No                | `netcup_ccp` | `netcup_ccp` or `aws_route53` (alias `route53`) |
+| `DOMAIN`                 | `update` command  | -            | Zone used for hostnames within it. Required for the `update` command, optional for the server |
+| `ALLOWED_HOSTNAMES`      | No (recommended)  | all          | Comma-separated hostnames that may be updated; `*.suffix` matches any name below `suffix`. Other hostnames get `nohost` (HTTP 403) |
+| `DNS_TTL`                | No                | `60`         | DNS record TTL in seconds |
+| `TRUSTED_PROXIES`        | No                | none         | Comma-separated CIDRs or IPs whose `X-Forwarded-For` header is trusted |
+| `ALLOW_PRIVATE_IPS`      | No                | `false`      | Accept private, CGNAT, link-local and other non-public addresses |
+| `CLEANUP_STALE_RECORD`   | No                | `false`      | Delete the A record after an AAAA update and vice versa |
+| `SSL`                    | No                | `false`      | Serve HTTPS (`true` or `1`) |
+| `CERTFILE`               | With `SSL`        | `/ssl/fullchain.pem` | Certificate path; relative paths are resolved below `/ssl/` |
+| `KEYFILE`                | With `SSL`        | `/ssl/privkey.pem`   | Key path; relative paths are resolved below `/ssl/` |
+| `LOG_LEVEL`              | No                | `info`       | `debug`, `info`, `warn` or `error` |
+| `PORT`                   | No                | `8053`       | Read and validated, but currently **not applied**: the listen port comes from the `--port` flag of the `server` command (default `8053`) |
+| `ADDON_OPTIONS_PATH`     | No                | -            | Home Assistant `options.json`; its keys are exported as upper-case environment variables |
+| `NETCUP_CUSTOMER_NUMBER` | Netcup            | -            | Netcup customer number |
+| `NETCUP_API_KEY`         | Netcup            | -            | Netcup API key |
+| `NETCUP_API_PASSWORD`    | Netcup            | -            | Netcup API password |
+| `ROUTE53_ZONE_ID`        | No                | -            | Route53: fixed hosted zone, skips zone discovery |
+| `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Route53 | - | Standard AWS SDK configuration (or IRSA, instance profile, `~/.aws/credentials`) |
 
 ### Response Codes
 
-| Code      | Description                            |
-| --------- | -------------------------------------- |
-| `good`    | DNS record updated successfully        |
-| `nochg`   | IP address unchanged, no update needed |
-| `notfqdn` | Invalid hostname format                |
-| `911`     | Server error or invalid IP address     |
+| Response              | Description |
+| --------------------- | ----------- |
+| `good <ip>[,<ip6>]`   | DNS record(s) updated successfully |
+| `nochg <ip>[,<ip6>]`  | IP address unchanged, no update needed |
+| `notfqdn`             | Invalid hostname format |
+| `nohost` (HTTP 403)   | Hostname not in `ALLOWED_HOSTNAMES` |
+| `911`                 | Provider error, or invalid / non-public IP address |
+| HTTP 401              | Missing or wrong credentials |
+| HTTP 429              | Too many failed logins from this address (10 within 15 minutes) |
+
+The UniFi path format (`/<hostname>`) returns only the status word, without addresses.
 
 ## Router Configuration
 
@@ -351,9 +451,11 @@ curl -u "dyndns:your-password" \
    - **Hostname**: `home.example.com` (or `*.example.com` for wildcard)
    - **Username**: `dyndns` (or your configured username)
    - **Password**: Your DynDNS password
-   - **Server**: `dyndns.example.com/%h` (replace with your domain)
+   - **Server**: `dyndns.example.com/nic/update?hostname=%h` (recommended, replace with your server name)
 
-**Note**: UniFi uses inadyn internally. You need to edit `/etc/inadyn.conf` to add `ddns-path = "/"`:
+Without `myip`, the server uses the address the gateway connects from; this is the variant to use behind CGNAT (see [IPv6 / CGNAT](#ipv6--cgnat)). With a public WAN IPv4, `dyndns.example.com/nic/update?hostname=%h&myip=%i` also works.
+
+**Path format `/%h`:** If you use the server value `dyndns.example.com/%h` instead, inadyn on the gateway may need `ddns-path = "/"` in `/etc/inadyn.conf`. This edit is made on the gateway itself and does not have to survive a firmware update, reprovisioning or a change in the UniFi UI:
 
 ```bash
 # SSH into UniFi device
@@ -374,7 +476,8 @@ killall inadyn
 1. Navigate to: **Internet → Freigaben → DynDNS**
 2. Configure:
    - **DynDNS-Anbieter**: `Benutzerdefiniert`
-   - **Update-URL**: `https://dyndns.example.com/nic/update?hostname=<domain>&myip=<ipaddr>`
+   - **Update-URL**: `https://dyndns.example.com/nic/update?hostname=<domain>&myip=<ipaddr>&myipv6=<ip6addr>`
+     (drop `&myipv6=<ip6addr>` for IPv4 only)
    - **Domainname**: `home.example.com`
    - **Benutzername**: `dyndns`
    - **Kennwort**: Your DynDNS password
@@ -443,7 +546,7 @@ mise run run:dev
 
 # Or export environment variables manually
 export AUTH_USERNAME=dyndns
-export AUTH_PASSWORD='$2a$10$...'
+export AUTH_PASSWORD='your-password'
 export DNS_PROVIDER=netcup_ccp
 export DOMAIN=example.com
 export NETCUP_CUSTOMER_NUMBER=123456
@@ -507,10 +610,11 @@ Result: **14MB static binary** that runs anywhere with no dependencies!
 
 ## Security Considerations
 
-- HTTP Basic Authentication for DynDNS endpoint
-- Container runs as non-root user (UID 65532)
-- Read-only root filesystem
-- No privilege escalation
+- **TLS**: Basic Auth sends the password in every request. Use plain HTTP only behind a TLS-terminating reverse proxy or Ingress, or enable `SSL=true`.
+- HTTP Basic Authentication for the DynDNS endpoint, compared in constant time; 10 failed logins from one address within 15 minutes lead to HTTP 429
+- Set `ALLOWED_HOSTNAMES` so the credentials can only update the intended records
+- `X-Forwarded-For` is ignored unless the peer is in `TRUSTED_PROXIES`
+- The example Kubernetes manifests run the container as non-root (UID 65532) with a read-only root filesystem and without privilege escalation (the image itself defaults to root for Home Assistant compatibility)
 - Minimal container image (distroless)
 - All secrets stored in Kubernetes Secrets or environment variables
 
@@ -533,17 +637,21 @@ kubectl logs -l app=homeddns --tail=100 -f
 **401 Unauthorized**
 
 - Check that Basic Auth credentials are correct
-- Verify password hash was generated correctly
+- `AUTH_PASSWORD` is compared as plain text; do not configure a hash
 
 **"notfqdn" Response**
 
 - Hostname must be a valid FQDN
-- Ensure domain is managed by Netcup
+
+**"nohost" Response (HTTP 403)**
+
+- The hostname is not listed in `ALLOWED_HOSTNAMES`
 
 **"911" Response**
 
-- Check Netcup API credentials
-- Verify domain exists in Netcup account
+- The IP address is not public (private, CGNAT, link-local, ...); the log shows the rejected address. Send the public address via `myip`/`myipv6`, set `TRUSTED_PROXIES` when running behind a proxy, or set `ALLOW_PRIVATE_IPS=true` for internal use
+- Check the provider credentials (Netcup API credentials, AWS credentials and IAM policy)
+- Verify the domain / hosted zone exists in your provider account
 - Check service logs for detailed error messages
 
 **Session Timeout**
