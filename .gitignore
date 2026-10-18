@@ -11,3 +11,5 @@ repomix/
 
 # Environment files
 .env.local
+# Local mise overrides (e.g. KO_DOCKER_REPO for your own registry)
+mise.local.toml
